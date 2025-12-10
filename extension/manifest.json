@@ -1,0 +1,39 @@
+{
+    "manifest_version": 2,
+    "name": "GeckoView Spatial Navigation",
+    "version": "3.0.0",
+    "description": "WICG-compatible spatial navigation for Android TV/AAOS with D-pad support, focus visualization, and accessibility",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "spatial-navigation@geckoview.dev",
+            "strict_min_version": "109.0"
+        }
+    },
+    "permissions": [
+        "geckoViewAddons",
+        "nativeMessaging",
+        "nativeMessagingFromContent"
+    ],
+    "background": {
+        "scripts": [
+            "background.js"
+        ],
+        "persistent": false
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "spatial_navigation.js"
+            ],
+            "run_at": "document_end",
+            "all_frames": true
+        }
+    ],
+    "web_accessible_resources": [
+        "*.css",
+        "spatial_navigation.debug.js"
+    ]
+}

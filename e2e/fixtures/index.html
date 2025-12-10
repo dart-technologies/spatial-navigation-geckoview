@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spatial Navigation Test Grid</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #ffc107;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 150px);
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: linear-gradient(135deg, #2a2a4a, #1a1a3a);
+            border: 2px solid #444;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .card:hover {
+            transform: scale(1.02);
+        }
+
+        .card-icon {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        .card-title {
+            font-weight: 600;
+        }
+
+        /* Navigation containment test */
+        .contained-section {
+            --spatial-navigation-contain: contain;
+            border: 2px dashed #ffc107;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 30px;
+        }
+
+        .contained-section h2 {
+            color: #ffc107;
+            margin-bottom: 10px;
+        }
+
+        .contained-grid {
+            display: flex;
+            gap: 10px;
+        }
+
+        .contained-item {
+            background: #333366;
+            padding: 15px 25px;
+            border-radius: 6px;
+            border: 1px solid #555;
+        }
+
+        /* Grid mode test */
+        .grid-mode-section {
+            --spatial-navigation-function: grid;
+            margin-top: 30px;
+        }
+
+        .grid-mode-section h2 {
+            color: #4ade80;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎮 Spatial Navigation Test Page</h1>
+
+    <!-- Basic 4x2 Grid -->
+    <div class="grid" id="main-grid">
+        <button class="card" tabindex="0" data-id="1">
+            <div class="card-icon">🎬</div>
+            <div class="card-title">Movies</div>
+        </button>
+        <button class="card" tabindex="0" data-id="2">
+            <div class="card-icon">📺</div>
+            <div class="card-title">TV Shows</div>
+        </button>
+        <button class="card" tabindex="0" data-id="3">
+            <div class="card-icon">🎵</div>
+            <div class="card-title">Music</div>
+        </button>
+        <button class="card" tabindex="0" data-id="4">
+            <div class="card-icon">🎮</div>
+            <div class="card-title">Games</div>
+        </button>
+        <button class="card" tabindex="0" data-id="5">
+            <div class="card-icon">📰</div>
+            <div class="card-title">News</div>
+        </button>
+        <button class="card" tabindex="0" data-id="6">
+            <div class="card-icon">⚙️</div>
+            <div class="card-title">Settings</div>
+        </button>
+        <button class="card" tabindex="0" data-id="7">
+            <div class="card-icon">📱</div>
+            <div class="card-title">Apps</div>
+        </button>
+        <button class="card" tabindex="0" data-id="8">
+            <div class="card-icon">🔍</div>
+            <div class="card-title">Search</div>
+        </button>
+    </div>
+
+    <!-- Contained Navigation Section -->
+    <div class="contained-section">
+        <h2>🔒 Contained Navigation</h2>
+        <div class="contained-grid">
+            <button class="contained-item" tabindex="0">Option A</button>
+            <button class="contained-item" tabindex="0">Option B</button>
+            <button class="contained-item" tabindex="0">Option C</button>
+        </div>
+    </div>
+
+    <!-- Grid Mode Section -->
+    <div class="grid-mode-section">
+        <h2>📊 Grid Mode (CSS Property)</h2>
+        <div class="grid">
+            <button class="card" tabindex="0" data-id="g1">
+                <div class="card-icon">1️⃣</div>
+                <div class="card-title">Grid 1</div>
+            </button>
+            <button class="card" tabindex="0" data-id="g2">
+                <div class="card-icon">2️⃣</div>
+                <div class="card-title">Grid 2</div>
+            </button>
+            <button class="card" tabindex="0" data-id="g3">
+                <div class="card-icon">3️⃣</div>
+                <div class="card-title">Grid 3</div>
+            </button>
+            <button class="card" tabindex="0" data-id="g4">
+                <div class="card-icon">4️⃣</div>
+                <div class="card-title">Grid 4</div>
+            </button>
+        </div>
+    </div>
+
+    <div class="status" id="status">
+        Focus: <span id="focus-target">none</span>
+    </div>
+
+    <!-- Load spatial navigation bundle -->
+    <script src="./spatial-navigation.js"></script>
+    <script>
+        // Track focus changes for testing
+        document.addEventListener('focusin', (e) => {
+            const target = e.target.closest('[data-id]');
+            document.getElementById('focus-target').textContent =
+                target ? target.dataset.id : e.target.className;
+        });
+
+        // Initialize with grid mode for the grid sections
+        window.spatialNavConfig = {
+            scoringMode: 'geometric',
+            wrapNavigation: true,
+            useCSSProperties: true
+        };
+
+        // Focus first element
+        setTimeout(() => {
+            document.querySelector('.card')?.focus();
+        }, 100);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,101 @@
+{
+  "name": "@dart-technologies/spatial-navigation-geckoview",
+  "version": "3.0.0",
+  "description": "GeckoView web extension for D-pad/arrow key spatial navigation with WICG compatibility",
+  "main": "dist/spatial-navigation.js",
+  "module": "dist/spatial-navigation.esm.js",
+  "types": "dist/types/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "import": "./dist/spatial-navigation.esm.js",
+      "require": "./dist/spatial-navigation.js",
+      "types": "./dist/types/index.d.ts"
+    },
+    "./extension": {
+      "default": "./extension/spatial_navigation.js"
+    },
+    "./extension/debug": {
+      "default": "./extension/spatial_navigation.debug.js"
+    },
+    "./messaging": {
+      "import": "./dist/messaging.esm.js",
+      "require": "./dist/messaging.js",
+      "types": "./dist/types/messaging/index.d.ts"
+    },
+    "./core": {
+      "import": "./dist/core.esm.js",
+      "require": "./dist/core.js",
+      "types": "./dist/types/core/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/",
+    "extension/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/rollup_build.mjs",
+    "build:all": "npm run build && npm run copy:extension",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist/types",
+    "copy:extension": "cp dist/spatial-navigation.extension.js extension/spatial_navigation.js && cp dist/spatial-navigation.debug.js extension/spatial_navigation.debug.js && cp dist/background.js extension/background.js",
+    "test": "node --import tsx --test __tests__/*.test.ts",
+    "test:watch": "node --import tsx --test --watch __tests__/*.test.ts",
+    "test:visual": "npx playwright test",
+    "test:visual:update": "npx playwright test --update-snapshots",
+    "test:visual:ui": "npx playwright test --ui",
+    "test:benchmark": "node --import tsx --test __tests__/benchmark.test.ts",
+    "lint": "tsc --noEmit",
+    "lint:tests": "tsc -p __tests__/tsconfig.json --noEmit",
+    "clean": "rm -rf dist/",
+    "prepublishOnly": "npm run clean && npm run build:all && npm run build:types"
+  },
+  "type": "module",
+  "keywords": [
+    "geckoview",
+    "spatial-navigation",
+    "webextension",
+    "android-tv",
+    "aaos",
+    "dpad",
+    "arrow-keys",
+    "focus-management",
+    "tv-navigation",
+    "wicg",
+    "focus-groups",
+    "scroll-snap",
+    "shadow-dom"
+  ],
+  "author": "dart-technologies",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dart-technologies/spatial-navigation-geckoview.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dart-technologies/spatial-navigation-geckoview/issues"
+  },
+  "homepage": "https://github.com/dart-technologies/spatial-navigation-geckoview#readme",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@rollup/plugin-typescript": "^11.1.6",
+    "@types/node": "^24.10.1",
+    "rollup": "^4.53.3",
+    "serve": "^14.2.5",
+    "tslib": "^2.8.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {},
+  "optionalDependencies": {}
+}

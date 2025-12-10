@@ -1,0 +1,25 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "../globals.d.ts",
+    "../main.ts",
+    "../background.ts",
+    "../core/**/*.ts",
+    "../navigation/**/*.ts",
+    "../utils/**/*.ts",
+    "../src/**/*.ts",
+    "./**/*.ts"
+  ],
+  "exclude": [
+    "../node_modules",
+    "../dist",
+    "../extension",
+    "../*.js"
+  ]
+}
+
