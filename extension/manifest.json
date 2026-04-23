@@ -22,5 +22,5 @@
       "all_frames": true
     }
   ],
-  "web_accessible_resources": ["*.css", "spatial_navigation.debug.js"]
+  "web_accessible_resources": []
 }
