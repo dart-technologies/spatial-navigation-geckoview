@@ -1,8 +1,12 @@
 /**
  * Global state management for GeckoView Spatial Navigation System
  *
- * Maintains focus state with persistence across page navigations.
- * State is stored on window.spatialNavState to survive SPA navigations.
+ * Maintains focus state across same-document SPA navigations via a
+ * module-scoped cache. We also publish the state on `window.spatialNavState`
+ * so consumer scripts (debuggers, tests, the legacy Flutter alias) can read
+ * it, but — critically — we never read the window copy back. A malicious
+ * page could otherwise pre-populate `window.spatialNavState` with a crafted
+ * shape and hijack the overlay target, focusables list, or current index.
  */
 
 import type { SpatialNavConfig, DirectionName } from './config';
@@ -194,16 +198,23 @@ declare global {
 }
 
 /**
+ * Module-scoped state cache. Authoritative source of truth for state
+ * re-entry — we deliberately do NOT read `window.spatialNavState` to
+ * prevent a malicious page from pre-populating a trust-boundary-crossing
+ * global and hijacking the overlay target / focusables.
+ */
+let cachedState: SpatialNavState | null = null;
+
+/**
  * Initialize or retrieve the global spatial navigation state.
- * State persists across page navigations in SPAs.
+ * State persists across same-document SPA navigations via the module cache.
  */
 export function getState(config: SpatialNavConfig): SpatialNavState {
-    // Reuse existing state if available (SPA navigation)
-    // Support both new and legacy names
-    const existingState = window.spatialNavState || window.flutterFocusState;
-    const state: SpatialNavState = existingState || ({} as SpatialNavState);
+    const state: SpatialNavState = cachedState ?? ({} as SpatialNavState);
+    cachedState = state;
 
-    // Persist to both names for compatibility
+    // Publish to window for consumer access (debug tools, legacy alias).
+    // This is write-only from our perspective — we never read it back.
     window.spatialNavState = state;
     window.flutterFocusState = state;
 
@@ -304,6 +315,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
  * Reset state (useful for testing or page reloads).
  */
 export function resetState(): void {
+    cachedState = null;
     delete window.spatialNavState;
     delete window.flutterFocusState;
 }
@@ -318,7 +330,7 @@ export function getInstrumentation():
           version: string;
       })
     | null {
-    const state = window.spatialNavState || window.flutterFocusState;
+    const state = cachedState;
     if (!state) return null;
 
     return {
