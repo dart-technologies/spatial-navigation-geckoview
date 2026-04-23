@@ -6,7 +6,9 @@
      *
      * Provides structured logging with:
      * - Build-time DEBUG constant for tree-shaking (replaced by Rollup)
-     * - Runtime opt-in via window.SPATIAL_NAV_DEBUG / flutterSpatialNavDebug
+     * - Debug-bundle-only runtime opt-in via window.SPATIAL_NAV_DEBUG /
+     *   flutterSpatialNavDebug (gated on DEBUG so a malicious page can't
+     *   re-enable verbose logs in a production build)
      * - Namespaced loggers for subsystems
      * - Performance timing utilities
      *
@@ -16,7 +18,8 @@
      *   log.debug('Moving focus', { direction: 'down' });
      *
      * Build-time: Rollup replaces `"development"` with "production" or "development".
-     * Production builds tree-shake debug calls; runtime opt-in still works for live debugging.
+     * Production bundles tree-shake debug calls and the runtime opt-in; only
+     * the debug bundle honours window.SPATIAL_NAV_DEBUG.
      */
     /**
      * Build-time debug flag.
@@ -32,11 +35,19 @@
         return true;
     })();
     /**
-     * Runtime debug flag — checked on every log call.
-     * Lets users enable verbose logging in a production build by setting
-     * `window.SPATIAL_NAV_DEBUG = true` (or the legacy `flutterSpatialNavDebug = true`).
+     * Runtime debug flag — checked on every log call, but ONLY in debug builds.
+     *
+     * In debug bundles (`DEBUG === true`) a developer can set
+     * `window.SPATIAL_NAV_DEBUG = true` (or the legacy `flutterSpatialNavDebug`)
+     * to turn on verbose logging. In production bundles the build-time
+     * `DEBUG` constant is `false`, so this function unconditionally returns
+     * false and the call is dead-code-eliminated by Terser along with the
+     * surrounding `console.log` — pages cannot re-enable verbose logging by
+     * poking a page-visible global.
      */
     function isRuntimeDebugEnabled() {
+        if (!DEBUG)
+            return false;
         if (typeof window === 'undefined')
             return false;
         const w = window;
@@ -223,6 +234,20 @@
      */
     const DEFAULT_FOCUS_COLOR = '#1565C0';
     /**
+     * Clamp a validated-finite numeric config value into an allowed range,
+     * falling back to the default when the user didn't supply one.
+     *
+     * Used to bound visual-layer values so a malicious page setting e.g.
+     * `overlayZIndex: -1` (hides overlay behind page content) or
+     * `arrowScale: 1e6` (paint-thread DoS via gigantic borders) cannot
+     * produce pathological output.
+     */
+    function clampNumber(value, min, max, fallback) {
+        if (typeof value !== 'number' || !Number.isFinite(value))
+            return fallback;
+        return Math.min(Math.max(value, min), max);
+    }
+    /**
      * Get the current spatial navigation configuration.
      * Merges user-provided config with defaults.
      */
@@ -230,22 +255,20 @@
         const rawUserConfig = globalScope.spatialNavConfig || globalScope.flutterSpatialNavConfig || {};
         const userConfig = validateUserConfig(rawUserConfig);
         return {
-            // Visual styling
+            // Visual styling — numeric values are clamped so malicious config
+            // can't produce invisible overlays (negative z-index), paint-thread
+            // DoS (huge blur/arrow scale), or off-screen overlays (huge margin).
             color: userConfig.color || DEFAULT_FOCUS_COLOR,
-            outlineWidth: userConfig.outlineWidth || 3,
-            outlineOffset: userConfig.outlineOffset || 3,
-            overlayZIndex: userConfig.overlayZIndex || 2147483646,
-            arrowScale: typeof userConfig.arrowScale === 'number' ? userConfig.arrowScale : 1.0,
+            outlineWidth: clampNumber(userConfig.outlineWidth, 1, 20, 3),
+            outlineOffset: clampNumber(userConfig.outlineOffset, 0, 50, 3),
+            overlayZIndex: clampNumber(userConfig.overlayZIndex, 1, 2147483646, 2147483646),
+            arrowScale: clampNumber(userConfig.arrowScale, 0.1, 4, 1.0),
             disabledColor: userConfig.disabledColor || '128, 128, 128',
             overlayTheme: userConfig.overlayTheme === 'high-contrast' ? 'high-contrast' : 'default',
-            safeAreaMargin: typeof userConfig.safeAreaMargin === 'number' ? Math.max(0, userConfig.safeAreaMargin) : 12,
-            overlayScrimOpacity: typeof userConfig.overlayScrimOpacity === 'number'
-                ? Math.min(Math.max(userConfig.overlayScrimOpacity, 0), 1)
-                : 0.06,
-            overlayGlowOpacity: typeof userConfig.overlayGlowOpacity === 'number'
-                ? Math.min(Math.max(userConfig.overlayGlowOpacity, 0), 1)
-                : 0.35,
-            overlayGlowBlur: typeof userConfig.overlayGlowBlur === 'number' ? Math.max(0, userConfig.overlayGlowBlur) : 14,
+            safeAreaMargin: clampNumber(userConfig.safeAreaMargin, 0, 200, 12),
+            overlayScrimOpacity: clampNumber(userConfig.overlayScrimOpacity, 0, 1, 0.06),
+            overlayGlowOpacity: clampNumber(userConfig.overlayGlowOpacity, 0, 1, 0.35),
+            overlayGlowBlur: clampNumber(userConfig.overlayGlowBlur, 0, 64, 14),
             // Dynamic content observation
             observeMutations: userConfig.observeMutations !== false,
             observeScroll: userConfig.observeScroll !== false,
@@ -311,14 +334,12 @@
             useCSSProperties: userConfig.useCSSProperties !== false,
             // Element filtering
             minElementSize: typeof userConfig.minElementSize === 'number' ? userConfig.minElementSize : 1,
-            // Native app identifier (matches the host app's WebExtension registration).
-            nativeAppId: userConfig.nativeAppId || 'flutter_geckoview',
         };
     }
     // =============================================================================
     // Validation
     // =============================================================================
-    const STRING_KEYS = new Set(['color', 'disabledColor', 'intersectionRootMargin', 'nativeAppId']);
+    const STRING_KEYS = new Set(['color', 'disabledColor', 'intersectionRootMargin']);
     const NUMBER_KEYS = new Set([
         'outlineWidth',
         'outlineOffset',
@@ -362,6 +383,16 @@
     };
     const ARRAY_KEYS = new Set(['virtualContainerSelectors']);
     const OBJECT_KEYS = new Set(['iframeSupport', 'focusGroups']);
+    /**
+     * Per-array caps applied during validation.
+     *
+     * A page setting virtualContainerSelectors to, say, 10,000 complex
+     * selectors would make every DOM mutation trigger a re-scan under each
+     * selector — a CPU DoS vector. Caps chosen generously enough to cover
+     * every legitimate use (the default list is 8 selectors).
+     */
+    const ARRAY_MAX_ITEMS = 32;
+    const ARRAY_ITEM_MAX_LENGTH = 256;
     /**
      * Sanitize an arbitrary user-provided config object.
      *
@@ -417,7 +448,17 @@
             }
             if (ARRAY_KEYS.has(key)) {
                 if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
-                    out[key] = value;
+                    // Cap the array to prevent a malicious page from shipping a
+                    // thousand CSS selectors that get re-run on every mutation;
+                    // and cap each selector length to prevent catastrophic regex
+                    // / complex-selector perf attacks via querySelectorAll.
+                    const capped = value
+                        .slice(0, ARRAY_MAX_ITEMS)
+                        .filter((s) => s.length <= ARRAY_ITEM_MAX_LENGTH);
+                    if (capped.length !== value.length) {
+                        log$f.warn(`config.${key}: truncated from ${value.length} to ${capped.length} items (caps: ${ARRAY_MAX_ITEMS} items, ${ARRAY_ITEM_MAX_LENGTH} chars each)`);
+                    }
+                    out[key] = capped;
                 }
                 else {
                     log$f.warn(`config.${key}: expected string[], got ${typeof value} — ignored`);
@@ -440,36 +481,51 @@
     // =============================================================================
     // Direction maps
     // =============================================================================
-    const directionByKey = {
+    // Null-prototype + frozen lookup tables. A null prototype means that a
+    // page- or native-host-supplied key like `__proto__` or `constructor`
+    // yields `undefined` rather than walking up to `Object.prototype` — the
+    // caller's `if (map[dir])` guard then correctly short-circuits instead of
+    // silently passing a function object into downstream handlers.
+    const directionByKey = Object.freeze(Object.assign(Object.create(null), {
         ArrowDown: { axis: 'y', sign: 1, name: 'down' },
         ArrowUp: { axis: 'y', sign: -1, name: 'up' },
         ArrowRight: { axis: 'x', sign: 1, name: 'right' },
         ArrowLeft: { axis: 'x', sign: -1, name: 'left' },
-    };
-    const directionByName = {
+    }));
+    const directionByName = Object.freeze(Object.assign(Object.create(null), {
         down: directionByKey.ArrowDown,
         up: directionByKey.ArrowUp,
         right: directionByKey.ArrowRight,
         left: directionByKey.ArrowLeft,
-    };
+    }));
     const directionKeys = ['down', 'up', 'right', 'left'];
 
     /**
      * Global state management for GeckoView Spatial Navigation System
      *
-     * Maintains focus state with persistence across page navigations.
-     * State is stored on window.spatialNavState to survive SPA navigations.
+     * Maintains focus state across same-document SPA navigations via a
+     * module-scoped cache. We also publish the state on `window.spatialNavState`
+     * so consumer scripts (debuggers, tests, the legacy Flutter alias) can read
+     * it, but — critically — we never read the window copy back. A malicious
+     * page could otherwise pre-populate `window.spatialNavState` with a crafted
+     * shape and hijack the overlay target, focusables list, or current index.
      */
     /**
+     * Module-scoped state cache. Authoritative source of truth for state
+     * re-entry — we deliberately do NOT read `window.spatialNavState` to
+     * prevent a malicious page from pre-populating a trust-boundary-crossing
+     * global and hijacking the overlay target / focusables.
+     */
+    let cachedState = null;
+    /**
      * Initialize or retrieve the global spatial navigation state.
-     * State persists across page navigations in SPAs.
+     * State persists across same-document SPA navigations via the module cache.
      */
     function getState(config) {
-        // Reuse existing state if available (SPA navigation)
-        // Support both new and legacy names
-        const existingState = window.spatialNavState || window.flutterFocusState;
-        const state = existingState || {};
-        // Persist to both names for compatibility
+        const state = cachedState ?? {};
+        cachedState = state;
+        // Publish to window for consumer access (debug tools, legacy alias).
+        // This is write-only from our perspective — we never read it back.
         window.spatialNavState = state;
         window.flutterFocusState = state;
         // Core navigation state
@@ -725,13 +781,20 @@
      * Includes main focus overlay and directional preview elements.
      */
     const log$e = createLogger('Overlay');
-    /** Returns true when build-time DEBUG is on or runtime opt-in is set. */
+    /**
+     * Returns true when build-time DEBUG is on or runtime opt-in is set.
+     *
+     * The runtime check is gated on the build-time `DEBUG` constant so that
+     * production bundles cannot be flipped into debug mode by a malicious
+     * page setting `window.SPATIAL_NAV_DEBUG = true`. Debug mode exposes
+     * runtime labels, a HUD, and focus element descriptions — not sensitive
+     * in isolation, but a page under attack should not be able to enumerate
+     * overlay state regardless.
+     */
     function isDebugActive() {
         if (DEBUG)
             return true;
-        if (typeof window === 'undefined')
-            return false;
-        return window.SPATIAL_NAV_DEBUG === true || window.flutterSpatialNavDebug === true;
+        return false;
     }
     // Constants
     const styleId = 'spatnav-focus-styles';
@@ -980,46 +1043,73 @@ body *:focus, body *:focus-visible {
         label.classList.add('visible');
     }
     /**
-     * Parse color string to extract RGB components for opacity variants.
+     * Clamp a parsed integer channel to [0, 255]. NaN becomes the fallback.
+     *
+     * Centralizing this guarantees every RGB component we interpolate into CSS
+     * is a structurally-inert integer — template concatenation cannot escape
+     * the declaration because the only characters emitted are digits.
      */
-    function parseColor(color) {
-        // Default matches DEFAULT_FOCUS_COLOR (#1565C0) in core/config.ts — kept in
-        // sync so a missing/malformed user color doesn't fall back to amber.
-        const defaultRGB = { r: 21, g: 101, b: 192 };
+    function clampByte(n, fallback) {
+        if (!Number.isFinite(n))
+            return fallback;
+        return Math.max(0, Math.min(255, Math.round(n)));
+    }
+    /**
+     * Parse a color string to RGB. Accepts:
+     *   - `#rgb` / `#rrggbb` hex
+     *   - `rgb(r, g, b)` / `rgba(r, g, b, a)`
+     *   - `"r, g, b"` comma-separated triple (the format used for `disabledColor`)
+     *
+     * The return value is three validated integers, so callers interpolating
+     * `${rgb.r}` into a CSS template cannot leak attacker-controlled characters.
+     */
+    function parseColor(color, fallback = { r: 21, g: 101, b: 192 }) {
         if (!color || typeof color !== 'string') {
-            return defaultRGB;
+            return fallback;
         }
-        // Handle hex colors
         if (color.startsWith('#')) {
             const hex = color.slice(1);
             if (hex.length === 3) {
                 return {
-                    r: parseInt(hex[0] + hex[0], 16),
-                    g: parseInt(hex[1] + hex[1], 16),
-                    b: parseInt(hex[2] + hex[2], 16),
+                    r: clampByte(parseInt(hex[0] + hex[0], 16), fallback.r),
+                    g: clampByte(parseInt(hex[1] + hex[1], 16), fallback.g),
+                    b: clampByte(parseInt(hex[2] + hex[2], 16), fallback.b),
                 };
             }
             else if (hex.length === 6) {
                 return {
-                    r: parseInt(hex.slice(0, 2), 16),
-                    g: parseInt(hex.slice(2, 4), 16),
-                    b: parseInt(hex.slice(4, 6), 16),
+                    r: clampByte(parseInt(hex.slice(0, 2), 16), fallback.r),
+                    g: clampByte(parseInt(hex.slice(2, 4), 16), fallback.g),
+                    b: clampByte(parseInt(hex.slice(4, 6), 16), fallback.b),
                 };
             }
+            return fallback;
         }
-        // Handle rgb/rgba
-        const rgbMatch = color.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        const rgbMatch = color.match(/^\s*rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
         if (rgbMatch) {
             return {
-                r: parseInt(rgbMatch[1], 10),
-                g: parseInt(rgbMatch[2], 10),
-                b: parseInt(rgbMatch[3], 10),
+                r: clampByte(parseInt(rgbMatch[1], 10), fallback.r),
+                g: clampByte(parseInt(rgbMatch[2], 10), fallback.g),
+                b: clampByte(parseInt(rgbMatch[3], 10), fallback.b),
             };
         }
-        return defaultRGB;
+        // "r, g, b" comma-separated triple — the historical `disabledColor` format.
+        const tripleMatch = color.match(/^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/);
+        if (tripleMatch) {
+            return {
+                r: clampByte(parseInt(tripleMatch[1], 10), fallback.r),
+                g: clampByte(parseInt(tripleMatch[2], 10), fallback.g),
+                b: clampByte(parseInt(tripleMatch[3], 10), fallback.b),
+            };
+        }
+        return fallback;
     }
     /**
      * Generate Shadow DOM CSS for overlay and previews.
+     *
+     * @internal — exported for tests only. The adversarial test in
+     * `__tests__/overlay-css.test.ts` exercises the CSS-injection guard on
+     * `disabledColor` and friends.
      */
     function generateShadowCSS(config) {
         let rgb = parseColor(config.color);
@@ -1041,7 +1131,11 @@ body *:focus, body *:focus-visible {
         const arrowScale = config.arrowScale || 1.0;
         const arrowWidth = Math.round(8 * arrowScale);
         const arrowLength = Math.round(12 * arrowScale);
-        const disabledColor = config.disabledColor || '128, 128, 128';
+        // Parse `disabledColor` through the same validator as `color` so attacker-
+        // controlled CSS cannot break out of the `:host` declaration. The parser
+        // returns three integers; concatenating them is structurally safe.
+        const disabledRGB = parseColor(config.disabledColor, { r: 128, g: 128, b: 128 });
+        const disabledColor = `${disabledRGB.r}, ${disabledRGB.g}, ${disabledRGB.b}`;
         return [
             ':host {',
             `  --sn-focus-rgb: ${colorBase};`,
@@ -5265,8 +5359,15 @@ body *:focus, body *:focus-visible {
             return browser;
         return undefined;
     }
-    /** Default native app identifier — override via constructor options. */
-    const DEFAULT_NATIVE_APP_ID = 'flutter_geckoview';
+    /**
+     * Native-messaging app identifier.
+     *
+     * Hardcoded — NOT configurable from page-visible surface. A web-page-writable
+     * `window.spatialNavConfig.nativeAppId` previously let untrusted content
+     * redirect all outbound native traffic to an attacker-registered host. Keep
+     * this in lockstep with `NATIVE_APP_ID` in `background.ts`.
+     */
+    const NATIVE_APP_ID = 'flutter_geckoview';
     const PORT_NAME = 'spatial-nav-content';
     /** Cap reconnect backoff so a flapping native peer doesn't push delay to infinity. */
     const MAX_RECONNECT_DELAY_MS = 30000;
@@ -5282,7 +5383,7 @@ body *:focus, body *:focus-visible {
      * Connects to the background script which relays messages to the native app.
      */
     class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
-        constructor(options = {}) {
+        constructor() {
             super();
             this.id = 'geckoview';
             this.name = 'GeckoView WebExtension';
@@ -5290,7 +5391,6 @@ body *:focus, body *:focus-visible {
             this.messageQueue = [];
             this.reconnectAttempts = 0;
             this.reconnectTimer = null;
-            this.nativeAppId = options.nativeAppId ?? DEFAULT_NATIVE_APP_ID;
         }
         isAvailable() {
             const b = getBrowser();
@@ -5355,11 +5455,11 @@ body *:focus, body *:focus-visible {
                     this.port = null;
                 }
             }
-            // Fallback to sendNativeMessage.
+            // Fallback to sendNativeMessage with the hardcoded app id.
             const b = getBrowser();
             if (b?.runtime?.sendNativeMessage) {
                 try {
-                    b.runtime.sendNativeMessage(this.nativeAppId, fullMessage);
+                    b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
                     return true;
                 }
                 catch {
@@ -5497,7 +5597,7 @@ body *:focus, body *:focus-visible {
             return messagingAdapter;
         // Pick an adapter based on which WebExtension bridge (if any) is available.
         const adapter = typeof browser !== 'undefined' && browser?.runtime
-            ? new GeckoViewMessagingAdapter({ nativeAppId: state.config.nativeAppId })
+            ? new GeckoViewMessagingAdapter()
             : new NoopMessagingAdapter();
         messagingAdapter = adapter;
         adapter.onMessage((message) => handleNativeResponse(message, state));
