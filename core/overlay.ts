@@ -9,6 +9,16 @@ import type { SpatialNavConfig } from './config';
 import type { SpatialNavState } from './state';
 import { calculateVisualRect } from './geometry';
 import { formatRuntimeLabel } from '../utils/runtime';
+import { createLogger, DEBUG } from '../utils/logger';
+
+const log = createLogger('Overlay');
+
+/** Returns true when build-time DEBUG is on or runtime opt-in is set. */
+function isDebugActive(): boolean {
+    if (DEBUG) return true;
+    if (typeof window === 'undefined') return false;
+    return window.SPATIAL_NAV_DEBUG === true || window.flutterSpatialNavDebug === true;
+}
 
 // Constants
 const styleId = 'spatnav-focus-styles';
@@ -29,8 +39,7 @@ interface RGB {
  * Ensure CSS styles are injected into document head.
  * Removes default focus outlines since Shadow DOM provides visual indicator.
  */
-export function ensureStyles(config: SpatialNavConfig): void {
-    /* eslint-disable max-len */
+export function ensureStyles(_config: SpatialNavConfig): void {
     const css = `
 /* GeckoView Spatial Nav: Shadow DOM overlay provides focus indicator */
 *:focus,
@@ -70,7 +79,6 @@ body *:focus, body *:focus-visible {
     }
 }
 `;
-    /* eslint-enable max-len */
 
     let style = document.getElementById(styleId);
     if (!style) {
@@ -100,6 +108,10 @@ export function ensureOverlay(config: SpatialNavConfig, state: SpatialNavState):
     host.id = overlayHostId;
     host.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: ${config.overlayZIndex || 2147483646};`;
     host.setAttribute(themeAttr, config.overlayTheme || 'default');
+    // Decorative — focus is communicated via the actual focused element. The
+    // overlay is purely visual chrome and should NOT be announced by AT.
+    host.setAttribute('role', 'presentation');
+    host.setAttribute('aria-hidden', 'true');
     document.body.appendChild(host);
 
     const shadow = host.attachShadow({ mode: 'open' });
@@ -146,7 +158,7 @@ export function ensureOverlay(config: SpatialNavConfig, state: SpatialNavState):
         updateRuntimeLabel(state);
         updateDebugHud(state);
     } else {
-        console.error('[SpatialNav] ❌ Failed to get overlay reference from shadow DOM!');
+        log.error('failed to get overlay reference from shadow DOM');
     }
     if (host.shadowRoot) {
         const previewRef = host.shadowRoot.getElementById('focus-preview-layer');
@@ -161,7 +173,7 @@ function updateRuntimeLabel(state: SpatialNavState): void {
     if (!state.overlay) return;
 
     // Only show the runtime label in debug mode.
-    if (!(window as { flutterSpatialNavDebug?: boolean }).flutterSpatialNavDebug) {
+    if (!isDebugActive()) {
         state.overlay.removeAttribute(runtimeAttr);
         return;
     }
@@ -183,8 +195,7 @@ function updateDebugHud(state: SpatialNavState): void {
     const hud = shadow.getElementById(debugHudId) as HTMLElement | null;
     if (!hud) return;
 
-    const debugEnabled = !!(window as { flutterSpatialNavDebug?: boolean }).flutterSpatialNavDebug;
-    if (!debugEnabled) {
+    if (!isDebugActive()) {
         hud.style.display = 'none';
         return;
     }
@@ -193,8 +204,8 @@ function updateDebugHud(state: SpatialNavState): void {
     const suppressed = state.overlaySuppressed ? 'suppressed' : 'active';
     hud.textContent = `SpatialNav · ${runtime} · ${suppressed}`;
     const safe = Math.max(0, state.config?.safeAreaMargin ?? 0);
-    hud.style.left = (safe + 8) + 'px';
-    hud.style.top = (safe + 8) + 'px';
+    hud.style.left = safe + 8 + 'px';
+    hud.style.top = safe + 8 + 'px';
     hud.style.display = 'block';
 }
 
@@ -245,8 +256,7 @@ function updateFocusLabel(
     const label = shadow.getElementById(overlayLabelId) as HTMLElement | null;
     if (!label) return;
 
-    const debugEnabled = !!(window as { flutterSpatialNavDebug?: boolean }).flutterSpatialNavDebug;
-    if (!debugEnabled) {
+    if (!isDebugActive()) {
         label.classList.remove('visible');
         return;
     }
@@ -297,7 +307,9 @@ function updateFocusLabel(
  * Parse color string to extract RGB components for opacity variants.
  */
 function parseColor(color: string | undefined): RGB {
-    const defaultRGB: RGB = { r: 255, g: 193, b: 7 };
+    // Default matches DEFAULT_FOCUS_COLOR (#1565C0) in core/config.ts — kept in
+    // sync so a missing/malformed user color doesn't fall back to amber.
+    const defaultRGB: RGB = { r: 21, g: 101, b: 192 };
 
     if (!color || typeof color !== 'string') {
         return defaultRGB;
@@ -310,13 +322,13 @@ function parseColor(color: string | undefined): RGB {
             return {
                 r: parseInt(hex[0] + hex[0], 16),
                 g: parseInt(hex[1] + hex[1], 16),
-                b: parseInt(hex[2] + hex[2], 16)
+                b: parseInt(hex[2] + hex[2], 16),
             };
         } else if (hex.length === 6) {
             return {
                 r: parseInt(hex.slice(0, 2), 16),
                 g: parseInt(hex.slice(2, 4), 16),
-                b: parseInt(hex.slice(4, 6), 16)
+                b: parseInt(hex.slice(4, 6), 16),
             };
         }
     }
@@ -327,7 +339,7 @@ function parseColor(color: string | undefined): RGB {
         return {
             r: parseInt(rgbMatch[1], 10),
             g: parseInt(rgbMatch[2], 10),
-            b: parseInt(rgbMatch[3], 10)
+            b: parseInt(rgbMatch[3], 10),
         };
     }
 
@@ -349,7 +361,7 @@ function generateShadowCSS(config: SpatialNavConfig): string {
             rgb = {
                 r: Math.min(255, Math.round(rgb.r * 1.3)),
                 g: Math.min(255, Math.round(rgb.g * 1.3)),
-                b: Math.min(255, Math.round(rgb.b * 1.3))
+                b: Math.min(255, Math.round(rgb.b * 1.3)),
             };
         }
     }
@@ -551,7 +563,7 @@ function generateShadowCSS(config: SpatialNavConfig): string {
         `  #${focusOverlayId}.pulse {`,
         '    animation: none;',
         '  }',
-        '}'
+        '}',
     ].join('\n');
 }
 
@@ -588,8 +600,12 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
     const safeAreaMargin = Math.max(0, config.safeAreaMargin ?? 0);
     const totalMargin = outlineWidth + outlineOffset + 2 + safeAreaMargin; // Extra safety buffer
 
-    const elDesc = element ? (element.tagName.toLowerCase() + (element.id ? '#' + element.id : '')) : '(null)';
-    // console.log(`[SpatialNav] Overlay positioned on ${elDesc}: L=${rect.left.toFixed(1)}, T=${rect.top.toFixed(1)}, W=${rect.width.toFixed(1)}, H=${rect.height.toFixed(1)}`);
+    log.debug(`overlay positioned on ${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}`, {
+        L: rect.left.toFixed(1),
+        T: rect.top.toFixed(1),
+        W: rect.width.toFixed(1),
+        H: rect.height.toFixed(1),
+    });
 
     overlay.style.display = 'block';
     overlay.classList.add('visible');
@@ -602,8 +618,8 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
 
     overlay.style.left = left + 'px';
     overlay.style.top = top + 'px';
-    overlay.style.width = (right - left) + 'px';
-    overlay.style.height = (bottom - top) + 'px';
+    overlay.style.width = right - left + 'px';
+    overlay.style.height = bottom - top + 'px';
     overlay.style.borderRadius = effectiveRadius;
 
     updateDebugHud(state);
@@ -649,8 +665,8 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
 
                 overlay.style.left = left + 'px';
                 overlay.style.top = top + 'px';
-                overlay.style.width = (right - left) + 'px';
-                overlay.style.height = (bottom - top) + 'px';
+                overlay.style.width = right - left + 'px';
+                overlay.style.height = bottom - top + 'px';
             }
         });
         ro.observe(element);

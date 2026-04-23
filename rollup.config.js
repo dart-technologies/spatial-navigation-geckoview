@@ -1,27 +1,46 @@
 import typescript from '@rollup/plugin-typescript';
+import replace from '@rollup/plugin-replace';
 import { minify } from 'terser';
 
 /**
- * Rollup configuration for GeckoView Spatial Navigation v3.0.0
+ * Rollup configuration for GeckoView Spatial Navigation.
  *
- * Now supports TypeScript source files (.ts).
  * Produces multiple output formats:
- * 1. UMD bundle for general usage (dist/spatial-navigation.js)
- * 2. ES Module for modern bundlers (dist/spatial-navigation.esm.js)
- * 3. IIFE for GeckoView extension (dist/spatial-navigation.extension.js)
- * 4. Debug bundle with sourcemaps (dist/spatial-navigation.debug.js)
+ *   1. UMD bundle for general usage (dist/spatial-navigation.js)
+ *   2. ES Module for modern bundlers (dist/spatial-navigation.esm.js)
+ *   3. IIFE for GeckoView extension (dist/spatial-navigation.extension.js)
+ *   4. Debug bundle with sourcemaps + console preserved (dist/spatial-navigation.debug.js)
+ *   5. Background script (dist/background.js)
+ *   6. Subpath bundles: dist/core.*, dist/messaging.*
+ *
+ * Production bundles:
+ *   - Set process.env.NODE_ENV = "production" so logger.ts's DEBUG constant folds to false.
+ *   - Drop console.log / console.info / console.debug at minification (warn/error preserved).
+ *
+ * Debug bundle:
+ *   - NODE_ENV = "development" so all debug logs remain.
+ *   - Not minified; sourcemaps emitted.
  */
 
-const makeTypescriptPlugin = () => typescript({
-    tsconfig: './tsconfig.json',
-    declaration: false,
-    declarationDir: undefined,
-    noEmit: false,
-    compilerOptions: {
-        noEmit: false,
+const makeTypescriptPlugin = () =>
+    typescript({
+        tsconfig: './tsconfig.json',
         declaration: false,
-    }
-});
+        declarationDir: undefined,
+        noEmit: false,
+        compilerOptions: {
+            noEmit: false,
+            declaration: false,
+        },
+    });
+
+const makeReplacePlugin = (isProduction) =>
+    replace({
+        preventAssignment: true,
+        values: {
+            'process.env.NODE_ENV': JSON.stringify(isProduction ? 'production' : 'development'),
+        },
+    });
 
 const terserPlugin = (reserved = []) => ({
     name: 'terser-inline',
@@ -35,20 +54,31 @@ const terserPlugin = (reserved = []) => ({
             toplevel: outputOptions.format === 'cjs',
             compress: {
                 passes: 2,
-                drop_console: false
+                // Drop low-severity logging in production; keep warn/error so real problems
+                // still surface in the host app's console.
+                drop_console: ['log', 'info', 'debug', 'trace'],
+                pure_funcs: ['console.log', 'console.info', 'console.debug', 'console.trace'],
             },
             mangle: {
                 reserved: [
-                    'window', 'document', 'browser',
-                    'spatialNavState', 'spatialNavConfig',
-                    'flutterFocusState', 'flutterSpatialNavConfig', 'flutterShowOverlay',
-                    'navigate', 'spatialNavigationSearch', 'focusableAreas', 'getSpatialNavigationContainer',
-                    ...reserved
-                ]
+                    'window',
+                    'document',
+                    'browser',
+                    'spatialNavState',
+                    'spatialNavConfig',
+                    'flutterFocusState',
+                    'flutterSpatialNavConfig',
+                    'flutterShowOverlay',
+                    'navigate',
+                    'spatialNavigationSearch',
+                    'focusableAreas',
+                    'getSpatialNavigationContainer',
+                    ...reserved,
+                ],
             },
             format: {
-                comments: false
-            }
+                comments: false,
+            },
         });
 
         if (!result.code) {
@@ -61,8 +91,12 @@ const terserPlugin = (reserved = []) => ({
         }
 
         return result.code;
-    }
+    },
 });
+
+const productionPlugins = () => [makeReplacePlugin(true), makeTypescriptPlugin(), terserPlugin()];
+
+const debugPlugins = () => [makeReplacePlugin(false), makeTypescriptPlugin()];
 
 export default [
     // UMD bundle
@@ -73,12 +107,9 @@ export default [
             format: 'umd',
             name: 'SpatialNavigation',
             exports: 'named',
-            strict: true
+            strict: true,
         },
-        plugins: [
-            makeTypescriptPlugin(),
-            terserPlugin()
-        ]
+        plugins: productionPlugins(),
     },
 
     // ES Module bundle
@@ -87,56 +118,111 @@ export default [
         output: {
             file: 'dist/spatial-navigation.esm.js',
             format: 'es',
-            exports: 'named'
+            exports: 'named',
         },
-        plugins: [
-            makeTypescriptPlugin(),
-            terserPlugin()
-        ]
+        plugins: productionPlugins(),
     },
 
-    // GeckoView extension IIFE bundle
+    // GeckoView extension IIFE bundle — emitted to BOTH dist/ and extension/
+    // so consumers loading the extension folder directly get a fresh build.
     {
         input: 'main.ts',
-        output: {
-            file: 'dist/spatial-navigation.extension.js',
-            format: 'iife',
-            name: 'SpatialNavigation',
-            strict: true
-        },
-        plugins: [
-            makeTypescriptPlugin(),
-            terserPlugin()
-        ]
+        output: [
+            {
+                file: 'dist/spatial-navigation.extension.js',
+                format: 'iife',
+                name: 'SpatialNavigation',
+                strict: true,
+            },
+            {
+                file: 'extension/spatial_navigation.js',
+                format: 'iife',
+                name: 'SpatialNavigation',
+                strict: true,
+            },
+        ],
+        plugins: productionPlugins(),
     },
 
-    // Debug bundle (unminified, with sourcemaps)
+    // Debug bundle (unminified, sourcemaps, console preserved) — also dual-emitted.
     {
         input: 'main.ts',
-        output: {
-            file: 'dist/spatial-navigation.debug.js',
-            format: 'iife',
-            name: 'SpatialNavigation',
-            strict: true,
-            sourcemap: true
-        },
-        plugins: [
-            makeTypescriptPlugin()
-        ]
+        output: [
+            {
+                file: 'dist/spatial-navigation.debug.js',
+                format: 'iife',
+                name: 'SpatialNavigation',
+                strict: true,
+                sourcemap: true,
+            },
+            {
+                file: 'extension/spatial_navigation.debug.js',
+                format: 'iife',
+                name: 'SpatialNavigation',
+                strict: true,
+                sourcemap: true,
+            },
+        ],
+        plugins: debugPlugins(),
     },
 
-    // Background Script bundle
+    // Background script — dual-emitted for the same reason.
     {
         input: 'background.ts',
-        output: {
-            file: 'dist/background.js',
-            format: 'iife',
-            name: 'SpatialNavBackground',
-            strict: true
-        },
-        plugins: [
-            makeTypescriptPlugin(),
-            terserPlugin()
-        ]
-    }
+        output: [
+            {
+                file: 'dist/background.js',
+                format: 'iife',
+                name: 'SpatialNavBackground',
+                strict: true,
+            },
+            {
+                file: 'extension/background.js',
+                format: 'iife',
+                name: 'SpatialNavBackground',
+                strict: true,
+            },
+        ],
+        plugins: productionPlugins(),
+    },
+
+    // Subpath: core-only bundle (UMD + ESM)
+    {
+        input: 'src/core-entry.ts',
+        output: [
+            {
+                file: 'dist/core.js',
+                format: 'umd',
+                name: 'SpatialNavigationCore',
+                exports: 'named',
+                strict: true,
+            },
+            {
+                file: 'dist/core.esm.js',
+                format: 'es',
+                exports: 'named',
+            },
+        ],
+        plugins: productionPlugins(),
+    },
+
+    // Subpath: messaging-only bundle (UMD + ESM)
+    {
+        input: 'src/messaging-entry.ts',
+        output: [
+            {
+                file: 'dist/messaging.js',
+                format: 'umd',
+                name: 'SpatialNavigationMessaging',
+                exports: 'named',
+                strict: true,
+            },
+            {
+                file: 'dist/messaging.esm.js',
+                format: 'es',
+                exports: 'named',
+            },
+        ],
+        plugins: productionPlugins(),
+    },
 ];

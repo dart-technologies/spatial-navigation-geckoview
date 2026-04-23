@@ -108,7 +108,8 @@ export async function sendBridgeMessage<T = unknown>(
         } else {
             // Chrome-style callback API
             return new Promise((resolve) => {
-                runtime.sendMessage(message, (response: T) => {
+                runtime.sendMessage(message, (response: unknown) => {
+                    const typedResponse = response as T;
                     const runtimeWithError = runtime as typeof runtime & { lastError?: Error | null };
                     const lastError = runtimeWithError.lastError;
                     if (lastError) {
@@ -117,9 +118,9 @@ export async function sendBridgeMessage<T = unknown>(
                         resolve({ success: false, error: errorMessage });
                     } else {
                         if (options.debug) {
-                            log.debug(`Response (callback): ${safeJson(response)}`);
+                            log.debug(`Response (callback): ${safeJson(typedResponse)}`);
                         }
-                        resolve({ success: true, response });
+                        resolve({ success: true, response: typedResponse });
                     }
                 });
             });
@@ -159,7 +160,7 @@ export async function sendSimulateClick(
     const message: { type: string; x: number; y: number; debug?: Record<string, unknown> } = {
         type: 'simulateClick',
         x,
-        y
+        y,
     };
     if (debug) {
         message.debug = debug;
@@ -197,6 +198,6 @@ export async function sendFocusExit(
     return sendBridgeMessage({
         type: 'focusExit',
         direction,
-        inTrap
+        inTrap,
     });
 }

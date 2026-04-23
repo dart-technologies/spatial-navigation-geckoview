@@ -13,13 +13,12 @@ import type { FocusableEntry } from '../core/state';
 
 // Extend globalThis for test globals
 declare global {
-    // eslint-disable-next-line no-var
     var spatialNavConfig: Partial<SpatialNavConfig> | undefined;
-    // eslint-disable-next-line no-var
+
     var flutterSpatialNavConfig: Partial<SpatialNavConfig> | undefined;
-    // eslint-disable-next-line no-var
+
     var innerWidth: number;
-    // eslint-disable-next-line no-var
+
     var innerHeight: number;
 }
 

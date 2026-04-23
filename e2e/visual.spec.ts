@@ -110,7 +110,7 @@ test.describe('Spatial Navigation Visual Tests', () => {
         await expect(focusedElement).toBeVisible();
 
         // Verify focus stayed or moved appropriately (not lost)
-        const tagName = await focusedElement.evaluate(el => el.tagName);
+        const tagName = await focusedElement.evaluate((el) => el.tagName);
         expect(tagName).toBe('BUTTON');
     });
 });

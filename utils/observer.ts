@@ -8,7 +8,21 @@
 import { refreshFocusables, refreshAttributes, getActiveElement } from './dom';
 import { scheduleOverlayUpdate, storePositionHint } from './focus-helpers';
 import { hideOverlay } from '../core/overlay';
+import { createLogger } from './logger';
 import type { SpatialNavState } from '../core/state';
+
+const log = createLogger('Observer');
+
+/** Mutation attributes worth observing — narrow filter improves perf on busy SPAs. */
+const RELEVANT_ATTRIBUTES = [
+    'style',
+    'class',
+    'disabled',
+    'hidden',
+    'aria-hidden',
+    'tabindex',
+    'contenteditable',
+];
 
 // Mutation buffer for batching changes
 const mutationBuffer: MutationRecord[] = [];
@@ -44,7 +58,7 @@ const frameworkAdapters: Record<string, FrameworkAdapter> = {
                 // Fallback: wait for microtask + rAF
                 Promise.resolve().then(() => requestAnimationFrame(callback));
             }
-        }
+        },
     },
     vue: {
         name: 'Vue',
@@ -57,12 +71,13 @@ const frameworkAdapters: Record<string, FrameworkAdapter> = {
         scheduleRefresh: (callback) => {
             // Vue uses nextTick which schedules after microtasks
             Promise.resolve().then(() => setTimeout(callback, 50));
-        }
+        },
     },
     angular: {
         name: 'Angular',
         detect: () => {
-            const hasTestability = typeof window !== 'undefined' && typeof window.getAllAngularTestabilities === 'function';
+            const hasTestability =
+                typeof window !== 'undefined' && typeof window.getAllAngularTestabilities === 'function';
             const ngVersion = document.querySelector('[ng-version]');
             const appRoot = document.querySelector('app-root');
             return !!(hasTestability || ngVersion || appRoot);
@@ -70,7 +85,9 @@ const frameworkAdapters: Record<string, FrameworkAdapter> = {
         scheduleRefresh: (callback) => {
             // Use Angular's testability API if available
             if (typeof window.getAllAngularTestabilities === 'function') {
-                const testabilities = window.getAllAngularTestabilities() as { whenStable: (cb: () => void) => void }[];
+                const testabilities = window.getAllAngularTestabilities() as {
+                    whenStable: (cb: () => void) => void;
+                }[];
                 if (testabilities && testabilities.length > 0) {
                     testabilities[0].whenStable(callback);
                     return;
@@ -78,7 +95,7 @@ const frameworkAdapters: Record<string, FrameworkAdapter> = {
             }
             // Fallback: wait for zone.js to settle
             setTimeout(callback, 100);
-        }
+        },
     },
     svelte: {
         name: 'Svelte',
@@ -88,8 +105,8 @@ const frameworkAdapters: Record<string, FrameworkAdapter> = {
         scheduleRefresh: (callback) => {
             // Svelte is synchronous, just use microtask
             Promise.resolve().then(callback);
-        }
-    }
+        },
+    },
 };
 
 /**
@@ -110,16 +127,16 @@ function detectFramework(state: SpatialNavState): FrameworkAdapter | null {
     for (const [, adapter] of Object.entries(frameworkAdapters)) {
         try {
             if (adapter.detect()) {
-                // console.log('[SpatialNav] Detected framework:', adapter.name);
+                log.debug(`detected framework: ${adapter.name}`);
                 state.detectedFramework = adapter;
                 return adapter;
             }
         } catch {
-            // Detection failed, try next
+            // Detection failed, try next.
         }
     }
 
-    state.detectedFramework = false;  // Mark as "no framework detected"
+    state.detectedFramework = false; // Mark as "no framework detected"
     return null;
 }
 
@@ -167,7 +184,7 @@ function flushMutations(state: SpatialNavState): void {
         storePositionHint(state);
 
         // Check if we need full refresh (DOM structure changed)
-        const needsFullRefresh = mutationBuffer.some(m => m.type === 'childList');
+        const needsFullRefresh = mutationBuffer.some((m) => m.type === 'childList');
 
         // Invalidate precomputed cache
         state.dirty = true;
@@ -175,21 +192,18 @@ function flushMutations(state: SpatialNavState): void {
 
         const doRefresh = (): void => {
             if (needsFullRefresh) {
-                // console.log('[SpatialNav] DOM childList mutation, full refresh');
+                log.debug('childList mutation → full refresh');
                 refreshFocusables(state);
             } else {
-                // console.log('[SpatialNav] Attribute mutation, incremental update');
+                log.debug('attribute mutation → incremental update');
                 refreshAttributes(state, mutationBuffer);
             }
 
-            // Update overlay if current element is still valid
-            // Explicitly cast result to HTMLElement since scheduleOverlayUpdate expects it
             const active = getActiveElement() as HTMLElement | null;
             if (active && state.focusableElements && state.focusableElements.includes(active)) {
                 scheduleOverlayUpdate(active, state);
             } else if (state.overlay) {
-                // Current element became unfocusable or was removed
-                console.warn('[SpatialNav] Current focus invalidated by mutation');
+                log.debug('current focus invalidated by mutation, hiding overlay');
                 hideOverlay(state);
             }
         };
@@ -197,7 +211,7 @@ function flushMutations(state: SpatialNavState): void {
         // Use framework-aware scheduling
         scheduleFrameworkAwareRefresh(doRefresh, state);
 
-        mutationBuffer.length = 0;  // Clear buffer
+        mutationBuffer.length = 0; // Clear buffer
         mutationTimer = null;
     }, debounce);
 }
@@ -212,23 +226,18 @@ export function attachMutationObserver(state: SpatialNavState): void {
 
     const config = state.config;
     if (config.observeMutations === false) {
-        // console.log('[SpatialNav] MutationObserver disabled by config');
+        log.debug('mutation observer disabled by config');
         return;
     }
 
     const observer = new MutationObserver((mutations) => {
-        // Filter for relevant mutations only
-        const relevantMutations = mutations.filter(mutation => {
+        const relevantMutations = mutations.filter((mutation) => {
             if (mutation.type === 'childList') {
                 return mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0;
             }
-
             if (mutation.type === 'attributes') {
-                // FIX (LOW): Include contenteditable for dynamic editors (Twitter compose, Medium)
-                const relevantAttrs = ['style', 'class', 'disabled', 'hidden', 'aria-hidden', 'tabindex', 'contenteditable'];
-                return relevantAttrs.includes(mutation.attributeName || '');
+                return RELEVANT_ATTRIBUTES.includes(mutation.attributeName || '');
             }
-
             return false;
         });
 
@@ -242,11 +251,11 @@ export function attachMutationObserver(state: SpatialNavState): void {
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['style', 'class', 'disabled', 'hidden', 'aria-hidden', 'tabindex', 'contenteditable']  // FIX (LOW)
+        attributeFilter: RELEVANT_ATTRIBUTES,
     });
 
     state.mutationObserver = observer;
-    // console.log('[SpatialNav] MutationObserver attached with buffer strategy');
+    log.debug('mutation observer attached');
 }
 
 /**
@@ -263,6 +272,6 @@ export function detachMutationObserver(state: SpatialNavState): void {
             clearTimeout(mutationTimer);
             mutationTimer = null;
         }
-        // console.log('[SpatialNav] MutationObserver detached');
+        log.debug('mutation observer detached');
     }
 }

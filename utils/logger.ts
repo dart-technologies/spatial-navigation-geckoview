@@ -2,41 +2,44 @@
  * Tree-shakeable Logging System for Spatial Navigation
  *
  * Provides structured logging with:
- * - Log levels (debug, info, warn, error)
+ * - Build-time DEBUG constant for tree-shaking (replaced by Rollup)
+ * - Runtime opt-in via window.SPATIAL_NAV_DEBUG / flutterSpatialNavDebug
  * - Namespaced loggers for subsystems
- * - Compile-time tree-shaking when DEBUG is false
  * - Performance timing utilities
- * - Conditional logging based on config
  *
  * Usage:
  *   import { createLogger, DEBUG } from './logger';
  *   const log = createLogger('Movement');
  *   log.debug('Moving focus', { direction: 'down' });
  *
- * In production builds, set DEBUG = false to tree-shake all debug calls.
+ * Build-time: Rollup replaces `process.env.NODE_ENV` with "production" or "development".
+ * Production builds tree-shake debug calls; runtime opt-in still works for live debugging.
  */
 
 /**
- * Debug mode flag.
- * Set to false in production builds to eliminate debug logging.
- * Build tools (Rollup, Webpack, etc.) will tree-shake dead code.
+ * Build-time debug flag.
+ * Replaced by Rollup's @rollup/plugin-replace at build time.
+ * In production builds this is `false`, allowing Terser to eliminate debug-only code.
  */
-export const DEBUG = /* @__PURE__ */ (() => {
-    // Check for explicit debug flag
-    if (typeof window !== 'undefined') {
-        const w = window as { SPATIAL_NAV_DEBUG?: boolean };
-        if (w.SPATIAL_NAV_DEBUG !== undefined) {
-            return w.SPATIAL_NAV_DEBUG;
-        }
+export const DEBUG: boolean = /* @__PURE__ */ (() => {
+    if (typeof process !== 'undefined') {
+        const env = (process as { env?: { NODE_ENV?: string } }).env;
+        if (env?.NODE_ENV === 'production') return false;
     }
-    // Default: enabled in development, disabled in production
-    return typeof process !== 'undefined' &&
-        (process as { env?: { NODE_ENV?: string } }).env?.NODE_ENV !== 'production';
+    return true;
 })();
 
 /**
- * Log levels in order of verbosity.
+ * Runtime debug flag — checked on every log call.
+ * Lets users enable verbose logging in a production build by setting
+ * `window.SPATIAL_NAV_DEBUG = true` (or the legacy `flutterSpatialNavDebug = true`).
  */
+function isRuntimeDebugEnabled(): boolean {
+    if (typeof window === 'undefined') return false;
+    const w = window as { SPATIAL_NAV_DEBUG?: boolean; flutterSpatialNavDebug?: boolean };
+    return w.SPATIAL_NAV_DEBUG === true || w.flutterSpatialNavDebug === true;
+}
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
 const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
@@ -44,45 +47,27 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
     info: 1,
     warn: 2,
     error: 3,
-    silent: 4
+    silent: 4,
 };
 
-/**
- * Current minimum log level.
- */
 let currentLevel: LogLevel = DEBUG ? 'debug' : 'warn';
 
-/**
- * Set the minimum log level.
- */
 export function setLogLevel(level: LogLevel): void {
     currentLevel = level;
 }
 
-/**
- * Get the current log level.
- */
 export function getLogLevel(): LogLevel {
     return currentLevel;
 }
 
-/**
- * Check if a log level should be output.
- */
 function shouldLog(level: LogLevel): boolean {
     return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[currentLevel];
 }
 
-/**
- * Format a log message with namespace prefix.
- */
 function formatMessage(namespace: string, message: string): string {
     return `[SpatialNav:${namespace}] ${message}`;
 }
 
-/**
- * Logger interface for typed logging.
- */
 export interface Logger {
     debug(message: string, data?: unknown): void;
     info(message: string, data?: unknown): void;
@@ -98,14 +83,16 @@ export interface Logger {
  * Create a namespaced logger.
  *
  * @param namespace - Logger namespace (e.g., 'Movement', 'Scoring', 'DOM')
- * @returns Logger instance
  */
 export function createLogger(namespace: string): Logger {
     const timers = new Map<string, number>();
 
     return {
         debug(message: string, data?: unknown): void {
-            if (!DEBUG || !shouldLog('debug')) return;
+            // Tree-shakeable in production: when DEBUG is false at build time,
+            // this whole branch can be removed by Terser unless runtime opt-in fires.
+            if (!DEBUG && !isRuntimeDebugEnabled()) return;
+            if (!shouldLog('debug')) return;
             if (data !== undefined) {
                 console.log(formatMessage(namespace, message), data);
             } else {
@@ -141,12 +128,12 @@ export function createLogger(namespace: string): Logger {
         },
 
         time(label: string): void {
-            if (!DEBUG) return;
+            if (!DEBUG && !isRuntimeDebugEnabled()) return;
             timers.set(label, performance.now());
         },
 
         timeEnd(label: string): void {
-            if (!DEBUG) return;
+            if (!DEBUG && !isRuntimeDebugEnabled()) return;
             const start = timers.get(label);
             if (start !== undefined) {
                 const duration = performance.now() - start;
@@ -156,20 +143,21 @@ export function createLogger(namespace: string): Logger {
         },
 
         group(label: string): void {
-            if (!DEBUG || !shouldLog('debug')) return;
+            if (!DEBUG && !isRuntimeDebugEnabled()) return;
+            if (!shouldLog('debug')) return;
             console.group(formatMessage(namespace, label));
         },
 
         groupEnd(): void {
-            if (!DEBUG || !shouldLog('debug')) return;
+            if (!DEBUG && !isRuntimeDebugEnabled()) return;
+            if (!shouldLog('debug')) return;
             console.groupEnd();
-        }
+        },
     };
 }
 
 /**
  * Pre-created loggers for common subsystems.
- * Import these directly for convenience.
  */
 export const logCore = /* @__PURE__ */ createLogger('Core');
 export const logMovement = /* @__PURE__ */ createLogger('Movement');
@@ -179,12 +167,8 @@ export const logMessaging = /* @__PURE__ */ createLogger('Messaging');
 export const logOverlay = /* @__PURE__ */ createLogger('Overlay');
 
 /**
- * Performance measurement decorator (for development).
+ * Performance measurement decorator (development only).
  * Wraps a function to measure and log execution time.
- *
- * @param namespace - Logger namespace
- * @param label - Label for the timing
- * @returns Decorator function
  */
 export function measurePerformance<T extends (...args: unknown[]) => unknown>(
     namespace: string,
@@ -207,13 +191,11 @@ export function measurePerformance<T extends (...args: unknown[]) => unknown>(
 
 /**
  * Conditional logging based on a predicate.
- * Useful for expensive-to-compute log data.
- *
- * @param condition - Whether to log
- * @param logFn - Function that produces the log call (only called if condition is true)
+ * Useful for expensive-to-compute log data — the predicate is only evaluated
+ * when debug logging is active, avoiding the cost in production.
  */
 export function logIf(condition: boolean, logFn: () => void): void {
-    if (DEBUG && condition) {
+    if ((DEBUG || isRuntimeDebugEnabled()) && condition) {
         logFn();
     }
 }

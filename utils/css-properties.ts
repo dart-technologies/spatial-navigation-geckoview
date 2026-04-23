@@ -37,7 +37,7 @@ export function getCSSNavProperties(element: Element): CSSNavProperties {
         return {
             contain: 'auto',
             action: 'auto',
-            function: 'normal'
+            function: 'normal',
         };
     }
 
@@ -50,14 +50,14 @@ export function getCSSNavProperties(element: Element): CSSNavProperties {
 
         return {
             contain: containValue === 'contain' ? 'contain' : 'auto',
-            action: (actionValue === 'focus' || actionValue === 'scroll') ? actionValue : 'auto',
-            function: functionValue === 'grid' ? 'grid' : 'normal'
+            action: actionValue === 'focus' || actionValue === 'scroll' ? actionValue : 'auto',
+            function: functionValue === 'grid' ? 'grid' : 'normal',
         };
     } catch {
         return {
             contain: 'auto',
             action: 'auto',
-            function: 'normal'
+            function: 'normal',
         };
     }
 }
@@ -153,7 +153,7 @@ export function hasNavigationContainment(element: Element): {
     const container = findNavigationContainer(element);
     return {
         contained: container !== null,
-        container
+        container,
     };
 }
 
@@ -267,7 +267,7 @@ function parseScrollSnapAlign(value: string): { blockAlign: ScrollSnapAlign; inl
     // Two values: block (first) and inline (second)
     return {
         blockAlign: (parts[0] || 'none') as ScrollSnapAlign,
-        inlineAlign: (parts[1] || 'none') as ScrollSnapAlign
+        inlineAlign: (parts[1] || 'none') as ScrollSnapAlign,
     };
 }
 
@@ -295,7 +295,7 @@ export function getScrollSnapInfo(element: Element): ScrollSnapInfo {
             strictness,
             isMandatory,
             isHorizontal,
-            isVertical
+            isVertical,
         };
     } catch {
         return {
@@ -304,7 +304,7 @@ export function getScrollSnapInfo(element: Element): ScrollSnapInfo {
             strictness: 'none',
             isMandatory: false,
             isHorizontal: false,
-            isVertical: false
+            isVertical: false,
         };
     }
 }
@@ -325,13 +325,13 @@ export function getScrollSnapAlign(element: Element): ScrollSnapAlignInfo {
         return {
             hasSnapAlign: blockAlign !== 'none' || inlineAlign !== 'none',
             blockAlign,
-            inlineAlign
+            inlineAlign,
         };
     } catch {
         return {
             hasSnapAlign: false,
             blockAlign: 'none',
-            inlineAlign: 'none'
+            inlineAlign: 'none',
         };
     }
 }
@@ -418,7 +418,7 @@ export function getScrollOptionsForSnapElement(element: Element): ScrollIntoView
     const alignInfo = getScrollSnapAlign(element);
 
     const options: ScrollIntoViewOptions = {
-        behavior: 'smooth'
+        behavior: 'smooth',
     };
 
     // Map snap alignment to scrollIntoView options

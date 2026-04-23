@@ -1,120 +1,152 @@
 /**
- * Tests for DOM utilities
+ * Tests for DOM utilities — exercised against a real DOM (happy-dom).
  */
 
-import test from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { SpatialNavState, FocusableEntry } from '../core/state';
-import { createMockElement, setupMockEnv as setupBaseMockEnv } from './helpers/mock_env';
+import {
+    setupDomEnv,
+    teardownDomEnv,
+    attachElement,
+    createElement,
+    createTestState,
+} from './helpers/dom_env';
+import { insertEntry, removeEntry, refreshFocusables, describeElement, getActiveElement } from '../utils/dom';
 
-// Module reference for dynamic import
-let domModule: typeof import('../utils/dom') | null = null;
+describe('insertEntry / removeEntry', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
 
-// Mock types
-interface MockElement {
-    nodeType: number;
-    tagName: string;
-    id: string;
-    className: string;
-    disabled: boolean;
-    parentElement: null;
-    hasAttribute: () => boolean;
-    getAttribute: () => null;
-    focus: () => void;
-    getBoundingClientRect: () => DOMRect;
-}
+    test('insertEntry appends a focusable and triggers intersection observation', () => {
+        const observed: Element[] = [];
+        const state = createTestState([], {
+            intersectionObserver: {
+                observe: (el: Element) => observed.push(el),
+                unobserve: () => {},
+                disconnect: () => {},
+            } as unknown as IntersectionObserver,
+        });
 
-interface MockDocument {
-    body: {
-        appendChild: () => void;
-    };
-    querySelectorAll: () => never[];
-}
+        const button = attachElement(
+            createElement({ tagName: 'button', id: 'primary', rect: { width: 100, height: 30 } })
+        );
 
-interface MockWindow {
-    getComputedStyle: () => {
-        visibility: string;
-        display: string;
-        overflow: string;
-        overflowX: string;
-        overflowY: string;
-    };
-}
+        insertEntry(button, state);
 
-function setupMockEnv(): void {
-    setupBaseMockEnv({
-        navigatorUserAgent: 'node',
-        document: {
-            body: { appendChild: () => { } }
-        } as any,
+        assert.equal(state.focusables.length, 1);
+        assert.equal(state.focusables[0].index, 0);
+        assert.equal(state.focusableElements[0], button);
+        assert.deepEqual(observed, [button]);
     });
-}
 
-async function loadDomModule(): Promise<typeof import('../utils/dom')> {
-    if (!domModule) {
-        domModule = await import('../utils/dom');
-    }
-    return domModule;
-}
+    test('removeEntry reindexes survivors and unobserves the removed element', () => {
+        const unobserved: Element[] = [];
+        const state = createTestState([], {
+            intersectionObserver: {
+                observe: () => {},
+                unobserve: (el: Element) => unobserved.push(el),
+                disconnect: () => {},
+            } as unknown as IntersectionObserver,
+        });
 
-function createElement(id: string): MockElement {
-    return createMockElement({ tagName: 'button', id }) as unknown as MockElement;
-}
+        const first = attachElement(
+            createElement({ tagName: 'button', id: 'first', rect: { width: 100, height: 30 } })
+        );
+        const second = attachElement(
+            createElement({ tagName: 'button', id: 'second', rect: { width: 100, height: 30 } })
+        );
 
-interface TestState extends Partial<SpatialNavState> {
-    observed: MockElement[];
-    unobserved: MockElement[];
-}
+        insertEntry(first, state);
+        insertEntry(second, state);
+        state.currentIndex = 1;
 
-function createState(): TestState {
-    const observed: MockElement[] = [];
-    const unobserved: MockElement[] = [];
-    return {
-        focusables: [],
-        focusableElements: [],
-        focusGroups: {},
-        scrollCache: new Map(),
-        intersectionObserver: {
-            observe: (el: unknown) => observed.push(el as MockElement),
-            unobserve: (el: unknown) => unobserved.push(el as MockElement),
-            disconnect: () => { },
-        } as unknown as IntersectionObserver,
-        observed,
-        unobserved,
-    };
-}
+        removeEntry(0, state);
 
-test('insertEntry pushes element and updates indices', async () => {
-    setupMockEnv();
-    const { insertEntry } = await loadDomModule();
-    const element = createElement('primary');
-    const state = createState() as unknown as SpatialNavState;
-
-    insertEntry(element as unknown as Element, state);
-
-    assert.equal(state.focusables.length, 1);
-    assert.equal(state.focusables[0].index, 0);
-    assert.equal(state.focusableElements[0], element);
-    assert.deepEqual((state as TestState).observed, [element]);
+        assert.equal(state.focusables.length, 1);
+        assert.equal(state.focusables[0].element, second);
+        assert.equal(state.focusables[0].index, 0);
+        assert.equal(state.currentIndex, 0);
+        assert.deepEqual(unobserved, [first]);
+    });
 });
 
-test('removeEntry reindexes remaining entries and unobserves element', async () => {
-    setupMockEnv();
-    const { insertEntry, removeEntry } = await loadDomModule();
-    const state = createState() as unknown as SpatialNavState;
-    const first = createElement('first');
-    const second = createElement('second');
+describe('refreshFocusables', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
 
-    insertEntry(first as unknown as Element, state);
-    insertEntry(second as unknown as Element, state);
-    state.currentIndex = 1;
+    test('discovers anchors, buttons, and tabindex elements', () => {
+        attachElement(createElement({ tagName: 'a', href: '/x', rect: { width: 50, height: 20 } }));
+        attachElement(createElement({ tagName: 'button', id: 'go', rect: { width: 80, height: 30 } }));
+        attachElement(createElement({ tagName: 'div', tabindex: '0', rect: { width: 100, height: 40 } }));
+        // Should NOT be picked up:
+        attachElement(createElement({ tagName: 'div', text: 'plain', rect: { width: 100, height: 40 } }));
 
-    removeEntry(0, state);
+        const state = createTestState();
+        refreshFocusables(state);
 
-    assert.equal(state.focusables.length, 1);
-    assert.equal(state.focusables[0].element, second);
-    assert.equal(state.focusables[0].index, 0);
-    assert.equal(state.currentIndex, 0);
-    assert.deepEqual((state as TestState).unobserved, [first]);
+        assert.equal(state.focusables.length, 3);
+        const tags = state.focusableElements.map((el) => el.tagName.toLowerCase()).sort();
+        assert.deepEqual(tags, ['a', 'button', 'div']);
+    });
+
+    test('skips disabled buttons and aria-hidden subtrees', () => {
+        const enabledBtn = attachElement(
+            createElement({ tagName: 'button', id: 'enabled', rect: { width: 80, height: 30 } })
+        );
+        const disabled = attachElement(
+            createElement({ tagName: 'button', id: 'disabled', rect: { width: 80, height: 30 } })
+        );
+        (disabled as HTMLButtonElement).disabled = true;
+
+        const hiddenWrapper = attachElement(
+            createElement({ tagName: 'div', attrs: { 'aria-hidden': 'true' } })
+        );
+        const hiddenChild = createElement({
+            tagName: 'button',
+            id: 'hidden-child',
+            rect: { width: 80, height: 30 },
+        });
+        hiddenWrapper.appendChild(hiddenChild);
+
+        const state = createTestState();
+        refreshFocusables(state);
+
+        assert.equal(state.focusables.length, 1);
+        assert.equal(state.focusables[0].element, enabledBtn);
+    });
+});
+
+describe('describeElement', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
+
+    test('formats tag, id, and first two classes', () => {
+        const el = createElement({ tagName: 'button', id: 'x', className: 'a b c' });
+        assert.equal(describeElement(el), 'button#x.a.b');
+    });
+
+    test('appends truncated textContent', () => {
+        const el = createElement({ tagName: 'span', text: 'hello world this is long' });
+        assert.match(describeElement(el), /^span \("hello world this is/);
+    });
+
+    test('returns empty string for null', () => {
+        assert.equal(describeElement(null), '');
+    });
+});
+
+describe('getActiveElement', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
+
+    test('returns null when body is the active element', () => {
+        assert.equal(getActiveElement(), null);
+    });
+
+    test('returns the focused element when one is focused', () => {
+        const button = attachElement(createElement({ tagName: 'button', tabindex: '0' }));
+        button.focus();
+        assert.equal(getActiveElement(), button);
+    });
 });

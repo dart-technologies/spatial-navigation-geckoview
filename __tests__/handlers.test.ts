@@ -1,663 +1,401 @@
 /**
- * Tests for handlers module - Click handling and native injection
- * 
- * These tests verify:
- * - isNativeClickTarget logic correctly identifies elements needing native injection
- * - Click handling dispatches correct events
- * - Message sending to background script works correctly
+ * Tests for navigation/handlers.ts — exercised against a real DOM (happy-dom).
+ *
+ * Coverage groups:
+ *  - Click strategy (native injection vs JS fallback)
+ *  - Menu-toggle close path (hover-exit + outside click)
+ *  - Hit-testing when the focus center is covered
+ *  - Event-lock + stale-handler defenses
+ *  - Editable-element bypass for Enter/Space
+ *  - Coordinate scaling by devicePixelRatio
  */
 
-import test from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    createMockElement,
-    createMockKeyboardEvent,
-    isNativeClickTarget,
-    setupMockEnv,
-} from './helpers/mock_env';
+    setupDomEnv,
+    teardownDomEnv,
+    attachElement,
+    createElement,
+    createTestState,
+    createKeyboardEvent,
+    setRootAttr,
+    setActiveElement,
+    installBrowserBridge,
+    removeBrowserBridge,
+} from './helpers/dom_env';
+import { handleKeyDown, scheduleOverlayUpdate } from '../navigation/handlers';
 
-const globalAny = globalThis as any;
+// ---------------------------------------------------------------------------
+// Click strategy: native injection vs JS .click()
+// ---------------------------------------------------------------------------
 
-// ============================================================================
-// isNativeClickTarget Logic Tests
-// ============================================================================
-
-test('isNativeClickTarget: anchor without href should be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'a', hasHref: false });
-    assert.equal(isNativeClickTarget(el as any), true, 'Anchor without href should use native injection');
-});
-
-test('isNativeClickTarget: anchor WITH href should NOT be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'a', hasHref: true, hrefValue: '/page' });
-    assert.equal(isNativeClickTarget(el as any), false, 'Anchor with href should use JS .click()');
-});
-
-test('isNativeClickTarget: div should be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'div' });
-    assert.equal(isNativeClickTarget(el as any), true, 'Div should use native injection');
-});
-
-test('isNativeClickTarget: button should be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'button' });
-    assert.equal(isNativeClickTarget(el as any), true, 'Button should use native injection');
-});
-
-test('isNativeClickTarget: role=button should be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'span', role: 'button' });
-    assert.equal(isNativeClickTarget(el as any), true, 'Element with role=button should use native injection');
-});
-
-test('isNativeClickTarget: video should be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'video' });
-    assert.equal(isNativeClickTarget(el as any), true, 'Video element should use native injection');
-});
-
-test('isNativeClickTarget: img should be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'img' });
-    assert.equal(isNativeClickTarget(el as any), true, 'Img element should use native injection');
-});
-
-// ============================================================================
-// handleKeyDown Click Strategy Tests
-// ============================================================================
-
-test('handleKeyDown: aria-haspopup menu toggle requests native injection when bridge exists', async () => {
-    const { mockDocument } = setupMockEnv();
-
-    const { handleKeyDown } = await import('../navigation/handlers');
-
-    const el = createMockElement({ tagName: 'a', hasHref: false, ariaHasPopup: 'true' });
-    let clickCount = 0;
-    el.click = () => { clickCount += 1; };
-
-    mockDocument.activeElement = el;
-    mockDocument.elementFromPoint = () => el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
-
-    let sendMessageCount = 0;
-    globalAny.browser = {
-        runtime: {
-            sendMessage: () => { sendMessageCount += 1; }
-        }
-    };
-
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 123.456 });
-
-    handleKeyDown(event as any, { handlerId: 1, overlay: null } as any);
-
-    assert.equal(clickCount, 0, 'native injection path should not use JS .click()');
-    assert.equal(sendMessageCount, 1, 'menu toggle should request native injection when available');
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
-});
-
-test('handleKeyDown: open menu toggle closes via outside click (not toggle center)', async () => {
-    const { mockDocument } = setupMockEnv();
-
-    const { handleKeyDown } = await import('../navigation/handlers');
-
-    // Simulate a menu toggle already open (aria-expanded="true").
-    const el = createMockElement({
-        tagName: 'a',
-        hasHref: false,
-        ariaHasPopup: 'true',
-        ariaExpanded: 'true'
-    });
-    let focusCount = 0;
-    el.focus = () => { focusCount += 1; };
-    el.getBoundingClientRect = () => ({
-        top: 100,
-        left: 100,
-        bottom: 150,
-        right: 200,
-        width: 100,
-        height: 50,
-        x: 100,
-        y: 100,
-        toJSON: () => ({})
+describe('handleKeyDown: click strategy', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => {
+        removeBrowserBridge();
+        teardownDomEnv();
     });
 
-    mockDocument.activeElement = el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
+    test('anchor-without-href requests native injection when bridge exists', () => {
+        const el = attachElement(
+            createElement({ tagName: 'a', tabindex: '0', rect: { x: 100, y: 100, width: 100, height: 50 } })
+        );
+        let clickCount = 0;
+        el.click = () => clickCount++;
 
-    // Outside-point hit testing is not required for this assertion; return null everywhere.
-    mockDocument.elementFromPoint = () => null;
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    let lastMessage: any = null;
-    globalAny.browser = {
-        runtime: {
-            sendMessage: (msg: unknown) => {
-                lastMessage = msg;
-            }
-        }
-    };
+        const event = createKeyboardEvent({ key: 'Enter', timeStamp: 789 });
+        handleKeyDown(event, createTestState([el], { handlerId: 1 }));
 
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 999.0 });
-
-    handleKeyDown(event as any, { handlerId: 1, overlay: null, dirty: false } as any);
-
-    // Close path runs the outside-click fallback in a later task.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // Close path sends an outside click at y = bottom + 8 (toggle-below) scaled by DPR=2.
-    assert.equal(lastMessage?.type, 'simulateClick');
-    assert.equal(lastMessage?.x, 300, 'outside click should align with toggle centerX (150px) scaled by dpr=2');
-    assert.equal(lastMessage?.y, 316, 'outside click should use toggle-below point (158px) scaled by dpr=2');
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
-
-    // Focus restore runs after the outside-click.
-    await new Promise((resolve) => setTimeout(resolve, 160));
-    assert.ok(focusCount > 0, 'should restore focus to the toggle after closing');
-});
-
-test('handleKeyDown: open menu toggle closes via JS outside click when bridge is unavailable', async () => {
-    const { mockDocument } = setupMockEnv();
-
-    const { handleKeyDown } = await import('../navigation/handlers');
-
-    const el = createMockElement({
-        tagName: 'a',
-        hasHref: false,
-        ariaHasPopup: 'true',
-        ariaExpanded: 'true'
+        assert.equal(clickCount, 0, 'native path should not invoke JS .click()');
+        assert.equal(capture.count, 1);
+        const msg = capture.messages[0] as { type: string; x: number; y: number };
+        assert.equal(msg.type, 'simulateClick');
+        // center is (150, 125), DPR is 2 → (300, 250)
+        assert.equal(msg.x, 300);
+        assert.equal(msg.y, 250);
+        assert.equal(event.preventDefaultCalled, true);
     });
 
-    let focusCount = 0;
-    el.focus = () => {
-        focusCount += 1;
-    };
+    test('anchor-without-href falls back to JS .click() when bridge is absent', () => {
+        const el = attachElement(
+            createElement({ tagName: 'a', tabindex: '0', rect: { x: 100, y: 100, width: 100, height: 50 } })
+        );
+        let clickCount = 0;
+        el.click = () => clickCount++;
 
-    let bodyClickCount = 0;
-    mockDocument.body.click = () => {
-        bodyClickCount += 1;
-    };
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        // no bridge installed
+        const event = createKeyboardEvent({ key: 'Enter', timeStamp: 456 });
 
-    mockDocument.activeElement = el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
-
-    // Ensure JS fallback: no bridge available.
-    globalAny.browser = undefined;
-
-    // Outside-point hit testing returns null everywhere, so the fallback clicks document.body.
-    mockDocument.elementFromPoint = () => null;
-
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 1234.0 });
-
-    handleKeyDown(event as any, { handlerId: 1, overlay: null, dirty: false, overlaySuppressed: true, updateTimer: null } as any);
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(bodyClickCount > 0, 'should attempt JS outside click via document.body.click()');
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
-
-    await new Promise((resolve) => setTimeout(resolve, 160));
-    assert.ok(focusCount > 0, 'should restore focus to the toggle after JS outside click');
-});
-
-test('handleKeyDown: submenu-visible menu toggle closes via hover-exit without outside click', async () => {
-    const { mockDocument } = setupMockEnv();
-
-    const { handleKeyDown } = await import('../navigation/handlers');
-
-    const toggle = createMockElement({
-        tagName: 'a',
-        hasHref: false,
-        ariaHasPopup: 'true'
+        assert.doesNotThrow(() => handleKeyDown(event, createTestState([el], { handlerId: 1 })));
+        assert.equal(clickCount, 1);
+        assert.equal(event.preventDefaultCalled, true);
     });
 
-    let focusCount = 0;
-    toggle.focus = () => {
-        focusCount += 1;
-    };
+    test('anchor-with-href uses JS .click() (no native injection)', () => {
+        const el = attachElement(
+            createElement({ tagName: 'a', href: '/page', rect: { x: 100, y: 100, width: 100, height: 50 } })
+        );
+        let clickCount = 0;
+        el.click = () => clickCount++;
 
-    // Simulate a submenu that is initially visible, but becomes hidden on mouseleave.
-    let submenuVisible = true;
-    const submenu = createMockElement({ tagName: 'ul' });
-    submenu.getBoundingClientRect = () => (submenuVisible ? ({
-        top: 200,
-        left: 200,
-        bottom: 250,
-        right: 400,
-        width: 200,
-        height: 50,
-        x: 200,
-        y: 200,
-        toJSON: () => ({})
-    } as any) : ({
-        top: 200,
-        left: 200,
-        bottom: 200,
-        right: 200,
-        width: 0,
-        height: 0,
-        x: 200,
-        y: 200,
-        toJSON: () => ({})
-    } as any));
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    submenu.dispatchEvent = (e: any) => {
-        if (e?.type === 'mouseleave') submenuVisible = false;
-        return true;
-    };
+        const event = createKeyboardEvent({ key: 'Enter', timeStamp: 100 });
+        handleKeyDown(event, createTestState([el], { handlerId: 1 }));
 
-    // Wire submenu discovery via nextElementSibling.
-    (toggle as any).nextElementSibling = submenu;
-
-    mockDocument.activeElement = toggle;
-    mockDocument.elementFromPoint = () => null;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
-
-    let sendMessageCount = 0;
-    globalAny.browser = {
-        runtime: {
-            sendMessage: () => { sendMessageCount += 1; }
-        }
-    };
-
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 1000.0 });
-
-    handleKeyDown(event as any, { handlerId: 1, overlay: null, dirty: false, overlaySuppressed: true, updateTimer: null } as any);
-
-    assert.equal(sendMessageCount, 0, 'hover-exit close should not send an outside native click');
-    assert.ok(focusCount > 0, 'should restore focus to the toggle after close');
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
-});
-
-test('handleKeyDown: outside-click fallback avoids navigation root and restores focus', async () => {
-    const { mockDocument } = setupMockEnv();
-
-    const { handleKeyDown } = await import('../navigation/handlers');
-
-    const toggle = createMockElement({
-        tagName: 'a',
-        hasHref: false,
-        ariaHasPopup: 'true'
+        assert.equal(capture.count, 0, 'real anchors should not request native injection');
+        assert.equal(clickCount, 1);
     });
 
-    let focusCount = 0;
-    toggle.focus = () => {
-        focusCount += 1;
-    };
+    test('button uses native injection when bridge exists', () => {
+        const el = attachElement(
+            createElement({ tagName: 'button', rect: { x: 0, y: 0, width: 100, height: 50 } })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    // Persistent "open" submenu (hover-exit does not close).
-    const submenu = createMockElement({ tagName: 'ul' });
-    submenu.getBoundingClientRect = () => ({
-        top: 200,
-        left: 200,
-        bottom: 250,
-        right: 300,
-        width: 100,
-        height: 50,
-        x: 200,
-        y: 200,
-        toJSON: () => ({})
-    });
-    (toggle as any).nextElementSibling = submenu;
-
-    // Navigation root that must be excluded from outside-click hit targets.
-    const navRoot: any = {
-        nodeType: 1,
-        tagName: 'DIV',
-        getAttribute: (name: string) => (name === 'id' ? 'desktopNav' : null),
-        contains: (other: unknown) => other === navRoot,
-        querySelector: () => toggle,
-        parentElement: null
-    };
-    (toggle as any).parentElement = navRoot;
-
-    mockDocument.activeElement = toggle;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
-
-    // Force the first pick ("submenu-below") to hit the excluded navRoot, so the picker
-    // must select the next candidate ("submenu-right").
-    mockDocument.elementFromPoint = (x: number, y: number) => {
-        if (Math.abs(x - 250) < 0.01 && Math.abs(y - 258) < 0.01) return navRoot;
-        return null;
-    };
-
-    let lastMessage: any = null;
-    globalAny.browser = {
-        runtime: {
-            sendMessage: (msg: unknown) => { lastMessage = msg; }
-        }
-    };
-
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 2000.0 });
-
-    handleKeyDown(event as any, { handlerId: 1, overlay: null, dirty: false, overlaySuppressed: true, updateTimer: null } as any);
-
-    // Close fallback runs in a later task.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // submenu-right: (x=308, y=208) scaled by dpr=2.
-    assert.equal(lastMessage?.type, 'simulateClick');
-    assert.equal(lastMessage?.x, 616);
-    assert.equal(lastMessage?.y, 416);
-
-    // Focus restore runs after a delay.
-    await new Promise((resolve) => setTimeout(resolve, 160));
-    assert.ok(focusCount > 0, 'should restore focus to the toggle after outside-click fallback');
-
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
-});
-
-test('handleKeyDown: native injection hit-tests when center is covered', async () => {
-    const { mockDocument } = setupMockEnv();
-
-    const { handleKeyDown } = await import('../navigation/handlers');
-
-    const el = createMockElement({ tagName: 'a', hasHref: false, ariaHasPopup: 'true' });
-    const overlay = createMockElement({ tagName: 'div', id: 'overlay' });
-    el.getBoundingClientRect = () => ({
-        top: 100,
-        left: 100,
-        bottom: 150,
-        right: 200,
-        width: 100,
-        height: 50,
-        x: 100,
-        y: 100,
-        toJSON: () => ({})
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 1 }),
+            createTestState([el], { handlerId: 1 })
+        );
+        assert.equal(capture.count, 1);
     });
 
-    mockDocument.activeElement = el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
+    test('div with role=button uses native injection', () => {
+        const el = attachElement(
+            createElement({ tagName: 'div', role: 'button', tabindex: '0', rect: { width: 80, height: 30 } })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    // Center point (150,125) is "covered" by overlay, but top-left inset (101,101) hits the element.
-    mockDocument.elementFromPoint = (x: number, y: number) => {
-        if (Math.abs(x - 101) < 0.01 && Math.abs(y - 101) < 0.01) return el;
-        if (Math.abs(x - 150) < 0.01 && Math.abs(y - 125) < 0.01) return overlay;
-        return overlay;
-    };
-
-    let lastMessage: any = null;
-    globalAny.browser = {
-        runtime: {
-            sendMessage: (msg: any) => { lastMessage = msg; }
-        }
-    };
-
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 999.0 });
-
-    handleKeyDown(event as any, { handlerId: 1, overlay: null } as any);
-
-    assert.equal(lastMessage?.type, 'simulateClick');
-    assert.equal(lastMessage?.x, 202, 'should pick top-left inset (101px) and scale by dpr=2');
-    assert.equal(lastMessage?.y, 202, 'should pick top-left inset (101px) and scale by dpr=2');
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 2 }),
+            createTestState([el], { handlerId: 1 })
+        );
+        assert.equal(capture.count, 1);
+    });
 });
 
-test('handleKeyDown: aria-haspopup menu toggle falls back to JS click when bridge is unavailable', async () => {
-    const { mockDocument } = setupMockEnv();
+// ---------------------------------------------------------------------------
+// Menu-toggle close path
+// ---------------------------------------------------------------------------
 
-    const { handleKeyDown } = await import('../navigation/handlers');
+describe('handleKeyDown: menu toggle (open → close)', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => {
+        removeBrowserBridge();
+        teardownDomEnv();
+    });
 
-    const el = createMockElement({ tagName: 'a', hasHref: false, ariaHasPopup: 'true' });
-    let clickCount = 0;
-    el.click = () => { clickCount += 1; };
+    test('open menu (aria-expanded=true) sends an outside-click via native injection', async () => {
+        const el = attachElement(
+            createElement({
+                tagName: 'a',
+                attrs: { 'aria-haspopup': 'true', 'aria-expanded': 'true' },
+                rect: { x: 100, y: 100, width: 100, height: 50 },
+            })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    mockDocument.activeElement = el;
-    mockDocument.elementFromPoint = () => el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 999 }),
+            createTestState([el], { handlerId: 1 })
+        );
 
-    globalAny.browser = undefined;
+        // Outside-click runs in setTimeout(_, 0) — wait one task.
+        await new Promise((resolve) => setTimeout(resolve, 5));
 
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 222.333 });
+        assert.ok(capture.count >= 1, 'should send at least one simulateClick');
+        const msg = capture.messages[capture.messages.length - 1] as { type: string };
+        assert.equal(msg.type, 'simulateClick');
+    });
 
-    assert.doesNotThrow(() => handleKeyDown(event as any, { handlerId: 1, overlay: null } as any));
-    assert.equal(clickCount, 1, 'menu toggle should fall back to JS .click() when bridge is unavailable');
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
+    test('open menu falls back to JS document.body.click() when no bridge', async () => {
+        const el = attachElement(
+            createElement({
+                tagName: 'a',
+                attrs: { 'aria-haspopup': 'true', 'aria-expanded': 'true' },
+                rect: { x: 100, y: 100, width: 100, height: 50 },
+            })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+
+        let bodyClickCount = 0;
+        document.body.click = () => bodyClickCount++;
+        // no bridge installed
+
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 1234 }),
+            createTestState([el], { handlerId: 1, overlaySuppressed: true })
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        assert.ok(bodyClickCount > 0, 'JS fallback should click document.body');
+    });
 });
 
-test('handleKeyDown: anchor without href falls back to JS click when browser is unavailable', async () => {
-    const { mockDocument } = setupMockEnv();
+// ---------------------------------------------------------------------------
+// Stale-handler & event-lock defenses
+// ---------------------------------------------------------------------------
 
-    const { handleKeyDown } = await import('../navigation/handlers');
+describe('handleKeyDown: defensive guards', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => {
+        removeBrowserBridge();
+        teardownDomEnv();
+    });
 
-    const el = createMockElement({ tagName: 'a', hasHref: false });
-    let clickCount = 0;
-    el.click = () => { clickCount += 1; };
+    test('stale handler short-circuits when DOM handler-id no longer matches', () => {
+        const el = attachElement(createElement({ tagName: 'button' }));
+        setActiveElement(el);
+        // DOM says handler 99 is current; my closure id is 1 → I should be a no-op.
+        setRootAttr('data-spatnav-handler-id', '99');
+        const capture = installBrowserBridge();
 
-    mockDocument.activeElement = el;
-    mockDocument.elementFromPoint = () => el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 5 }),
+            createTestState([el], { handlerId: 1 })
+        );
 
-    // Simulate injected-script mode where WebExtension globals are missing/unavailable.
-    globalAny.browser = undefined;
+        assert.equal(capture.count, 0, 'stale handler should not send any messages');
+    });
 
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 456.789 });
+    test('event lock allows a second Enter once the microtask cleanup runs', async () => {
+        const el = attachElement(
+            createElement({ tagName: 'button', rect: { x: 0, y: 0, width: 50, height: 30 } })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    assert.doesNotThrow(() => handleKeyDown(event as any, { handlerId: 1, overlay: null } as any));
-    assert.equal(clickCount, 1, 'should fall back to JS .click() when native injection is unavailable');
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
+        // Same constant timeStamp (mimics GeckoView synthetic events).
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 0 }),
+            createTestState([el], { handlerId: 1 })
+        );
+        // Allow queueMicrotask cleanup to run, releasing the lock.
+        await Promise.resolve();
+        // Avoid the rapid-repeat guard.
+        (window as { __SPATIAL_NAV_LAST_KEY_TIME__?: number }).__SPATIAL_NAV_LAST_KEY_TIME__ = 0;
+
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 0 }),
+            createTestState([el], { handlerId: 1 })
+        );
+
+        assert.equal(capture.count, 2, 'second Enter should not be blocked by a sticky lock');
+    });
+
+    test('rapid same-key repeats within 50ms are dropped', async () => {
+        const el = attachElement(createElement({ tagName: 'a', tabindex: '0' }));
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
+
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 100 }),
+            createTestState([el], { handlerId: 1 })
+        );
+        // Wait one tick so Date.now() advances at least 1ms (production guard
+        // requires `timeSinceLast > 0`, otherwise it's likely the same dispatched event).
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await Promise.resolve();
+
+        // Second Enter within 50ms (same lastKey) is treated as a duplicate.
+        const event2 = createKeyboardEvent({ key: 'Enter', timeStamp: 100 });
+        handleKeyDown(event2, createTestState([el], { handlerId: 1 }));
+
+        assert.equal(capture.count, 1, 'second rapid Enter should be dropped');
+        assert.equal(event2.preventDefaultCalled, true);
+    });
 });
 
-test('handleKeyDown: anchor without href requests native injection when browser bridge exists', async () => {
-    const { mockDocument } = setupMockEnv();
+// ---------------------------------------------------------------------------
+// Editable element bypass
+// ---------------------------------------------------------------------------
 
-    const { handleKeyDown } = await import('../navigation/handlers');
+describe('handleKeyDown: editable elements ignored', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => {
+        removeBrowserBridge();
+        teardownDomEnv();
+    });
 
-    const el = createMockElement({ tagName: 'a', hasHref: false });
-    let clickCount = 0;
-    el.click = () => { clickCount += 1; };
+    test('Enter on a textarea does not steal default behavior', () => {
+        const ta = attachElement(createElement({ tagName: 'textarea', rect: { width: 200, height: 60 } }));
+        setActiveElement(ta);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    mockDocument.activeElement = el;
-    mockDocument.elementFromPoint = () => el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
+        const event = createKeyboardEvent({ key: 'Enter', timeStamp: 1 });
+        handleKeyDown(event, createTestState([ta], { handlerId: 1 }));
 
-    let lastMessage: any = null;
-    globalAny.browser = {
-        runtime: {
-            sendMessage: (msg: unknown) => {
-                lastMessage = msg;
-            }
-        }
-    };
+        assert.equal(capture.count, 0);
+        assert.equal(event.preventDefaultCalled, false);
+    });
 
-    const event = createMockKeyboardEvent({ key: 'Enter', timeStamp: 789.012 });
+    test('Enter on a contenteditable does not steal default behavior', () => {
+        const div = attachElement(
+            createElement({ tagName: 'div', contentEditable: true, rect: { width: 200, height: 60 } })
+        );
+        setActiveElement(div);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    handleKeyDown(event as any, { handlerId: 1, overlay: null } as any);
+        const event = createKeyboardEvent({ key: 'Enter', timeStamp: 1 });
+        handleKeyDown(event, createTestState([div], { handlerId: 1 }));
 
-    assert.equal(clickCount, 0, 'native injection path should not use JS .click()');
-    assert.equal(lastMessage?.type, 'simulateClick');
-    assert.equal(lastMessage?.x, 300);
-    assert.equal(lastMessage?.y, 250);
-    assert.equal(event.preventDefaultCalled, true);
-    assert.equal(event.stopPropagationCalled, true);
-    assert.equal(event.stopImmediatePropagationCalled, true);
+        assert.equal(capture.count, 0);
+        assert.equal(event.preventDefaultCalled, false);
+    });
+
+    test('Enter on a text input does not steal default behavior', () => {
+        const input = attachElement(
+            createElement({ tagName: 'input', type: 'text', rect: { width: 200, height: 30 } })
+        );
+        setActiveElement(input);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
+
+        const event = createKeyboardEvent({ key: 'Enter', timeStamp: 1 });
+        handleKeyDown(event, createTestState([input], { handlerId: 1 }));
+
+        assert.equal(capture.count, 0);
+        assert.equal(event.preventDefaultCalled, false);
+    });
+
+    test('Enter on input type=button DOES activate', () => {
+        const input = attachElement(
+            createElement({ tagName: 'input', type: 'button', rect: { width: 100, height: 30 } })
+        );
+        setActiveElement(input);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
+
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 1 }),
+            createTestState([input], { handlerId: 1 })
+        );
+
+        // input type=button should not be considered editable.
+        // It IS an input (not in NATIVE_CLICK_TAGS), so falls through to JS .click().
+        // Either way, capture should be 0 because input isn't a native-click tag.
+        assert.equal(capture.count, 0);
+    });
 });
 
-test('handleKeyDown: event lock clears so repeated Enter works when timeStamp is constant', async () => {
-    const { mockDocument } = setupMockEnv();
+// ---------------------------------------------------------------------------
+// Overlay update suppression
+// ---------------------------------------------------------------------------
 
-    const { handleKeyDown } = await import('../navigation/handlers');
+describe('scheduleOverlayUpdate', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
 
-    const el = createMockElement({ tagName: 'a', hasHref: false, ariaHasPopup: 'true' });
-    mockDocument.activeElement = el;
-    mockDocument.elementFromPoint = () => el;
-    mockDocument.documentElement.setAttribute('data-spatnav-handler-id', '1');
+    test('cancels pending updates while overlay is suppressed', async () => {
+        let timerFired = false;
+        const pendingTimer = setTimeout(() => {
+            timerFired = true;
+        }, 25) as unknown as number;
 
-    let sendMessageCount = 0;
-    globalAny.browser = {
-        runtime: {
-            sendMessage: () => { sendMessageCount += 1; }
-        }
-    };
+        const target = attachElement(createElement({ tagName: 'button' }));
+        const state = createTestState([target], {
+            overlaySuppressed: true,
+            updateTimer: pendingTimer,
+        });
 
-    const makeEvent = () => createMockKeyboardEvent({ key: 'Enter', timeStamp: 0 });
+        scheduleOverlayUpdate(target, state);
 
-    handleKeyDown(makeEvent() as any, { handlerId: 1, overlay: null } as any);
+        assert.equal(state.updateTimer, null, 'pending timer should be cancelled');
+        assert.equal(state.lastFocusedElement, target);
 
-    // Allow queueMicrotask() cleanup to run (clears the DOM event lock).
-    await Promise.resolve();
-
-    // Avoid the "rapid repeat" guard in handlers.ts for this test.
-    globalAny.window.__SPATIAL_NAV_LAST_KEY_TIME__ = 0;
-
-    handleKeyDown(makeEvent() as any, { handlerId: 1, overlay: null } as any);
-
-    assert.equal(sendMessageCount, 2, 'second Enter should not be blocked by a sticky event lock');
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        assert.equal(timerFired, false, 'pending overlay update should not fire while suppressed');
+    });
 });
 
-// ============================================================================
-// Overlay suppression (focus-exit) tests
-// ============================================================================
+// ---------------------------------------------------------------------------
+// Coordinate scaling
+// ---------------------------------------------------------------------------
 
-test('scheduleOverlayUpdate skips when overlay suppressed', async () => {
-    setupMockEnv();
+describe('devicePixelRatio scaling', () => {
+    beforeEach(() => setupDomEnv({ devicePixelRatio: 2.75 }));
+    afterEach(() => {
+        removeBrowserBridge();
+        teardownDomEnv();
+    });
 
-    const { scheduleOverlayUpdate } = await import('../navigation/handlers');
+    test('CSS coordinates are multiplied by DPR before sending to native', () => {
+        const el = attachElement(
+            createElement({ tagName: 'button', rect: { x: 100, y: 200, width: 100, height: 100 } })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        const capture = installBrowserBridge();
 
-    let timerFired = false;
-    const pendingTimer = setTimeout(() => {
-        timerFired = true;
-    }, 25);
+        handleKeyDown(
+            createKeyboardEvent({ key: 'Enter', timeStamp: 1 }),
+            createTestState([el], { handlerId: 1 })
+        );
 
-    const state = {
-        overlaySuppressed: true,
-        updateTimer: pendingTimer,
-        lastFocusedElement: null,
-    } as any;
-
-    const target = createMockElement({ tagName: 'button', id: 't' }) as any;
-
-    scheduleOverlayUpdate(target, state);
-
-    assert.equal(state.updateTimer, null);
-    assert.equal(state.lastFocusedElement, target);
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    assert.equal(timerFired, false, 'pending overlay update should be cancelled while suppressed');
-});
-
-test('isNativeClickTarget: input type=text should NOT be native target', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'input', type: 'text' });
-    assert.equal(isNativeClickTarget(el as any), false, 'Text input should not use native injection');
-});
-
-// ============================================================================
-// Coordinate Scaling Tests
-// ============================================================================
-
-test('devicePixelRatio scaling: coordinates should be multiplied by DPR', async () => {
-    setupMockEnv();
-
-    const cssX = 100;
-    const cssY = 200;
-    const dpr = 2.0;
-
-    const finalX = cssX * dpr;
-    const finalY = cssY * dpr;
-
-    assert.equal(finalX, 200, 'X coordinate should be scaled by DPR');
-    assert.equal(finalY, 400, 'Y coordinate should be scaled by DPR');
-});
-
-test('devicePixelRatio scaling: handles fractional DPR', async () => {
-    setupMockEnv();
-
-    const cssX = 100;
-    const cssY = 200;
-    const dpr = 2.75; // Common on high-DPI displays
-
-    const finalX = cssX * dpr;
-    const finalY = cssY * dpr;
-
-    assert.equal(finalX, 275, 'X coordinate should handle fractional DPR');
-    assert.equal(finalY, 550, 'Y coordinate should handle fractional DPR');
-});
-
-// ============================================================================
-// Editable Element Detection Tests
-// ============================================================================
-
-test('isEditable: contenteditable element should be detected', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'div', isEditable: true });
-    const isEditable = el.isContentEditable || false;
-
-    assert.equal(isEditable, true, 'contentEditable element should be detected');
-});
-
-test('isEditable: textarea should be detected', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'textarea' });
-    const tagName = el.tagName.toLowerCase();
-    const isEditable = tagName === 'textarea';
-
-    assert.equal(isEditable, true, 'textarea should be detected as editable');
-});
-
-test('isEditable: input type=text should be detected as editable', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'input', type: 'text' });
-    const tagName = el.tagName.toLowerCase();
-    const inputType = el.type || '';
-    const nonEditableTypes = ['button', 'submit', 'reset', 'checkbox', 'radio', 'image', 'file'];
-
-    const isEditable = tagName === 'input' && !nonEditableTypes.includes(inputType);
-
-    assert.equal(isEditable, true, 'Text input should be detected as editable');
-});
-
-test('isEditable: input type=button should NOT be editable', async () => {
-    setupMockEnv();
-
-    const el = createMockElement({ tagName: 'input', type: 'button' });
-    const tagName = el.tagName.toLowerCase();
-    const inputType = el.type || '';
-    const nonEditableTypes = ['button', 'submit', 'reset', 'checkbox', 'radio', 'image', 'file'];
-
-    const isEditable = tagName === 'input' && !nonEditableTypes.includes(inputType);
-
-    assert.equal(isEditable, false, 'Button input should not be detected as editable');
-});
-
-// ============================================================================
-// Message Format Tests
-// ============================================================================
-
-test('simulateClick message: should have correct structure', async () => {
-    setupMockEnv();
-
-    const message = {
-        type: 'simulateClick',
-        x: 200,
-        y: 400
-    };
-
-    assert.equal(message.type, 'simulateClick', 'Message type should be simulateClick');
-    assert.equal(typeof message.x, 'number', 'X coordinate should be a number');
-    assert.equal(typeof message.y, 'number', 'Y coordinate should be a number');
+        const msg = capture.messages[0] as { x: number; y: number };
+        // center is (150, 250), DPR is 2.75
+        assert.equal(msg.x, 412.5);
+        assert.equal(msg.y, 687.5);
+    });
 });

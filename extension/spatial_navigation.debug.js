@@ -2,31 +2,238 @@
     'use strict';
 
     /**
-     * Configuration management for GeckoView Spatial Navigation System
+     * Tree-shakeable Logging System for Spatial Navigation
      *
-     * Handles configuration from window.spatialNavConfig or window.flutterSpatialNavConfig (legacy).
+     * Provides structured logging with:
+     * - Build-time DEBUG constant for tree-shaking (replaced by Rollup)
+     * - Runtime opt-in via window.SPATIAL_NAV_DEBUG / flutterSpatialNavDebug
+     * - Namespaced loggers for subsystems
+     * - Performance timing utilities
      *
-     * Features:
-     * - Grid mode for aligned layouts (BBC LRUD-inspired)
-     * - Configurable overlap threshold (BBC LRUD)
-     * - Wrap/cycle navigation at boundaries
-     * - CSS custom property integration (WICG)
-     * - Distance function selection (euclidean, manhattan, projected)
+     * Usage:
+     *   import { createLogger, DEBUG } from './logger';
+     *   const log = createLogger('Movement');
+     *   log.debug('Moving focus', { direction: 'down' });
+     *
+     * Build-time: Rollup replaces `"development"` with "production" or "development".
+     * Production builds tree-shake debug calls; runtime opt-in still works for live debugging.
      */
+    /**
+     * Build-time debug flag.
+     * Replaced by Rollup's @rollup/plugin-replace at build time.
+     * In production builds this is `false`, allowing Terser to eliminate debug-only code.
+     */
+    const DEBUG = /* @__PURE__ */ (() => {
+        if (typeof process !== 'undefined') {
+            const env = process.env;
+            if (env?.NODE_ENV === 'production')
+                return false;
+        }
+        return true;
+    })();
+    /**
+     * Runtime debug flag — checked on every log call.
+     * Lets users enable verbose logging in a production build by setting
+     * `window.SPATIAL_NAV_DEBUG = true` (or the legacy `flutterSpatialNavDebug = true`).
+     */
+    function isRuntimeDebugEnabled() {
+        if (typeof window === 'undefined')
+            return false;
+        const w = window;
+        return w.SPATIAL_NAV_DEBUG === true || w.flutterSpatialNavDebug === true;
+    }
+    const LOG_LEVEL_ORDER = {
+        debug: 0,
+        info: 1,
+        warn: 2,
+        error: 3,
+        silent: 4,
+    };
+    let currentLevel = DEBUG ? 'debug' : 'warn';
+    function shouldLog(level) {
+        return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[currentLevel];
+    }
+    function formatMessage(namespace, message) {
+        return `[SpatialNav:${namespace}] ${message}`;
+    }
+    /**
+     * Create a namespaced logger.
+     *
+     * @param namespace - Logger namespace (e.g., 'Movement', 'Scoring', 'DOM')
+     */
+    function createLogger(namespace) {
+        const timers = new Map();
+        return {
+            debug(message, data) {
+                // Tree-shakeable in production: when DEBUG is false at build time,
+                // this whole branch can be removed by Terser unless runtime opt-in fires.
+                if (!DEBUG && !isRuntimeDebugEnabled())
+                    return;
+                if (!shouldLog('debug'))
+                    return;
+                if (data !== undefined) {
+                    console.log(formatMessage(namespace, message), data);
+                }
+                else {
+                    console.log(formatMessage(namespace, message));
+                }
+            },
+            info(message, data) {
+                if (!shouldLog('info'))
+                    return;
+                if (data !== undefined) {
+                    console.info(formatMessage(namespace, message), data);
+                }
+                else {
+                    console.info(formatMessage(namespace, message));
+                }
+            },
+            warn(message, data) {
+                if (!shouldLog('warn'))
+                    return;
+                if (data !== undefined) {
+                    console.warn(formatMessage(namespace, message), data);
+                }
+                else {
+                    console.warn(formatMessage(namespace, message));
+                }
+            },
+            error(message, data) {
+                if (!shouldLog('error'))
+                    return;
+                if (data !== undefined) {
+                    console.error(formatMessage(namespace, message), data);
+                }
+                else {
+                    console.error(formatMessage(namespace, message));
+                }
+            },
+            time(label) {
+                if (!DEBUG && !isRuntimeDebugEnabled())
+                    return;
+                timers.set(label, performance.now());
+            },
+            timeEnd(label) {
+                if (!DEBUG && !isRuntimeDebugEnabled())
+                    return;
+                const start = timers.get(label);
+                if (start !== undefined) {
+                    const duration = performance.now() - start;
+                    timers.delete(label);
+                    this.debug(`${label}: ${duration.toFixed(2)}ms`);
+                }
+            },
+            group(label) {
+                if (!DEBUG && !isRuntimeDebugEnabled())
+                    return;
+                if (!shouldLog('debug'))
+                    return;
+                console.group(formatMessage(namespace, label));
+            },
+            groupEnd() {
+                if (!DEBUG && !isRuntimeDebugEnabled())
+                    return;
+                if (!shouldLog('debug'))
+                    return;
+                console.groupEnd();
+            },
+        };
+    }
+
+    /**
+     * Configuration management for GeckoView Spatial Navigation.
+     *
+     * Reads from `window.spatialNavConfig` (or the legacy `window.flutterSpatialNavConfig`),
+     * validates user input against a schema, and merges with defaults.
+     *
+     * Public surface:
+     *   - {@link getConfig} — get the merged effective config
+     *   - {@link updateConfig} — patch config at runtime
+     *   - {@link validateUserConfig} — sanitize an arbitrary input record
+     *   - {@link CONFIG_PRESETS} / {@link applyPreset} — TV / phone / tablet / kiosk profiles
+     *   - {@link SCORING_CONSTANTS} — score weights used by the scoring algorithm
+     */
+    const log$f = createLogger('Config');
+    // =============================================================================
+    // Scoring constants
+    // =============================================================================
+    /**
+     * Score-weight constants used by the scoring algorithm.
+     *
+     * The implicit hierarchy is intentional:
+     *
+     *   SAME_GROUP_BONUS (2000)
+     *     > GROUP_ENTER_LAST_BONUS (1000)
+     *     > GRID_BONUS (500)
+     *     > SAME_SCROLL_BONUS (150)
+     *     > OFFSCREEN_PENALTY (120)
+     *     > DIFFERENT_SCROLL_PENALTY (75)
+     *
+     * "Stay in the same focus group" outranks every other consideration so users
+     * don't spuriously jump out of a logical region (sidebar, modal, list). Inside
+     * the same group, grid alignment beats scroll-container co-location, and the
+     * smaller scroll-related nudges only act as tiebreakers between otherwise
+     * equivalent candidates.
+     *
+     * If you tune these, the test suite in `__tests__/scoring.test.ts` exercises
+     * the boundaries — keep that suite green.
+     */
+    const SCORING_CONSTANTS = {
+        /** Tiny epsilon for float comparisons (px). */
+        EPSILON: 1,
+        /** Allowed overlap when checking strict-edge containment (px, before adding overlapThreshold). */
+        EDGE_EPS_BASE: 4,
+        /**
+         * When `allowOverlap` is true, candidates may overlap the current element by this many
+         * pixels in the navigation axis (before adding overlapThreshold).
+         */
+        FORWARD_OVERLAP_TOLERANCE_PX: 12,
+        /** Off-axis spread allowed inside the navigation cone, base value (px). */
+        CONE_TOLERANCE_BASE_PX: 4,
+        /** Off-axis spread is also bounded by `primary * CONE_TOLERANCE_RATIO`. */
+        CONE_TOLERANCE_RATIO: 3,
+        /** Alignment baseline — perfect alignment scores this. */
+        ALIGNMENT_BASE: 10,
+        /** Alignment decay rate (px). Larger = more forgiving. */
+        ALIGNMENT_DECAY_PX: 50,
+        /** Projected-distance secondary axis weight (lower = strongly prefer aligned candidates). */
+        PROJECTED_SECONDARY_WEIGHT: 0.5,
+        /** Score weight applied to primary-axis distance — dominant factor in the linear score. */
+        PRIMARY_WEIGHT: 1000,
+        /** Bonus (subtracted from score) when a grid-aligned candidate is found in grid mode. */
+        GRID_BONUS: 500,
+        /** Bonus (subtracted) when candidate is in the same focus group as the current element. */
+        SAME_GROUP_BONUS: 2000,
+        /** Bonus (subtracted) when entering a group via its remembered last-focused element. */
+        GROUP_ENTER_LAST_BONUS: 1000,
+        /** Bonus (subtracted) when candidate shares the current element's scroll container. */
+        SAME_SCROLL_BONUS: 150,
+        /** Penalty (added) when candidate is in a different scroll container. */
+        DIFFERENT_SCROLL_PENALTY: 75,
+        /** Penalty (added) when candidate is off-screen. */
+        OFFSCREEN_PENALTY: 120,
+    };
     const globalScope = typeof window !== 'undefined' ? window : globalThis;
+    /**
+     * Default focus indicator color.
+     *
+     * `#1565C0` — blue 800 — gives ~5.4:1 contrast against white and ~3.2:1
+     * against black, both clearing the WCAG 2.1 non-text contrast minimum (3:1).
+     * The previous default of `#FFC107` (amber) only achieved ~1.6:1 on white.
+     */
+    const DEFAULT_FOCUS_COLOR = '#1565C0';
     /**
      * Get the current spatial navigation configuration.
      * Merges user-provided config with defaults.
      */
     function getConfig() {
-        // Support both new and legacy config names
-        const userConfig = globalScope.spatialNavConfig || globalScope.flutterSpatialNavConfig || {};
+        const rawUserConfig = globalScope.spatialNavConfig || globalScope.flutterSpatialNavConfig || {};
+        const userConfig = validateUserConfig(rawUserConfig);
         return {
             // Visual styling
-            color: userConfig.color || '#FFC107',
+            color: userConfig.color || DEFAULT_FOCUS_COLOR,
             outlineWidth: userConfig.outlineWidth || 3,
             outlineOffset: userConfig.outlineOffset || 3,
-            // Overlay/preview visual options
             overlayZIndex: userConfig.overlayZIndex || 2147483646,
             arrowScale: typeof userConfig.arrowScale === 'number' ? userConfig.arrowScale : 1.0,
             disabledColor: userConfig.disabledColor || '128, 128, 128',
@@ -38,9 +245,7 @@
             overlayGlowOpacity: typeof userConfig.overlayGlowOpacity === 'number'
                 ? Math.min(Math.max(userConfig.overlayGlowOpacity, 0), 1)
                 : 0.35,
-            overlayGlowBlur: typeof userConfig.overlayGlowBlur === 'number'
-                ? Math.max(0, userConfig.overlayGlowBlur)
-                : 14,
+            overlayGlowBlur: typeof userConfig.overlayGlowBlur === 'number' ? Math.max(0, userConfig.overlayGlowBlur) : 14,
             // Dynamic content observation
             observeMutations: userConfig.observeMutations !== false,
             observeScroll: userConfig.observeScroll !== false,
@@ -59,7 +264,7 @@
             iframeSupport: {
                 enabled: userConfig.iframeSupport?.enabled === true,
                 selector: userConfig.iframeSupport?.selector || 'iframe',
-                focusMethod: userConfig.iframeSupport?.focusMethod || 'element'
+                focusMethod: userConfig.iframeSupport?.focusMethod || 'element',
             },
             focusGroups: {
                 enabled: userConfig.focusGroups?.enabled ?? false,
@@ -78,7 +283,7 @@
                 '.infinite-scroll-component',
                 '[data-infinite-scroll]',
                 'ytd-rich-grid-renderer',
-                '[data-testid="primaryColumn"]'
+                '[data-testid="primaryColumn"]',
             ],
             virtualScrollDebounce: userConfig.virtualScrollDebounce || 150,
             // Accessibility / ARIA announcements
@@ -99,40 +304,153 @@
             // Overlap threshold
             overlapThreshold: typeof userConfig.overlapThreshold === 'number' ? userConfig.overlapThreshold : 0,
             // Grid mode settings
-            gridAlignmentTolerance: typeof userConfig.gridAlignmentTolerance === 'number'
-                ? userConfig.gridAlignmentTolerance : 20,
+            gridAlignmentTolerance: typeof userConfig.gridAlignmentTolerance === 'number' ? userConfig.gridAlignmentTolerance : 20,
             // Wrap navigation
             wrapNavigation: userConfig.wrapNavigation === true,
             // CSS custom property integration
             useCSSProperties: userConfig.useCSSProperties !== false,
             // Element filtering
             minElementSize: typeof userConfig.minElementSize === 'number' ? userConfig.minElementSize : 1,
+            // Native app identifier (matches the host app's WebExtension registration).
+            nativeAppId: userConfig.nativeAppId || 'flutter_geckoview',
         };
     }
+    // =============================================================================
+    // Validation
+    // =============================================================================
+    const STRING_KEYS = new Set(['color', 'disabledColor', 'intersectionRootMargin', 'nativeAppId']);
+    const NUMBER_KEYS = new Set([
+        'outlineWidth',
+        'outlineOffset',
+        'overlayZIndex',
+        'arrowScale',
+        'safeAreaMargin',
+        'overlayScrimOpacity',
+        'overlayGlowOpacity',
+        'overlayGlowBlur',
+        'mutationDebounce',
+        'scrollThreshold',
+        'intersectionThreshold',
+        'virtualScrollDebounce',
+        'precomputeCacheTimeout',
+        'overlapThreshold',
+        'gridAlignmentTolerance',
+        'minElementSize',
+    ]);
+    const BOOLEAN_KEYS = new Set([
+        'observeMutations',
+        'observeScroll',
+        'observeIntersection',
+        'autoRefocus',
+        'traverseShadowDom',
+        'observeVirtualContainers',
+        'enableAria',
+        'announceNavigation',
+        'announceBoundaries',
+        'verboseDescriptions',
+        'focusTrapDetection',
+        'frameworkAwareRefresh',
+        'precomputeCandidates',
+        'wrapNavigation',
+        'useCSSProperties',
+    ]);
+    const ENUM_KEYS = {
+        overlayTheme: new Set(['default', 'high-contrast']),
+        refocusStrategy: new Set(['closest', 'first']),
+        scoringMode: new Set(['geometric', 'grid']),
+        distanceFunction: new Set(['euclidean', 'manhattan', 'projected']),
+    };
+    const ARRAY_KEYS = new Set(['virtualContainerSelectors']);
+    const OBJECT_KEYS = new Set(['iframeSupport', 'focusGroups']);
     /**
-     * Update configuration at runtime.
+     * Sanitize an arbitrary user-provided config object.
+     *
+     * Each key is checked against its expected type; mismatched values are
+     * dropped with a logger warning so the caller knows something they wrote was
+     * ignored. Unknown keys are also dropped (defends against typos and stale
+     * docs).
      */
-    function updateConfig(newConfig) {
-        const existing = globalScope.flutterSpatialNavConfig || {};
-        globalScope.flutterSpatialNavConfig = {
-            ...existing,
-            ...newConfig,
-        };
+    function validateUserConfig(input) {
+        const out = {};
+        if (!input || typeof input !== 'object' || Array.isArray(input)) {
+            return out;
+        }
+        const obj = input;
+        for (const key of Object.keys(obj)) {
+            const value = obj[key];
+            if (STRING_KEYS.has(key)) {
+                if (typeof value === 'string') {
+                    out[key] = value;
+                }
+                else {
+                    log$f.warn(`config.${key}: expected string, got ${typeof value} — ignored`);
+                }
+                continue;
+            }
+            if (NUMBER_KEYS.has(key)) {
+                if (typeof value === 'number' && Number.isFinite(value)) {
+                    out[key] = value;
+                }
+                else {
+                    log$f.warn(`config.${key}: expected finite number, got ${typeof value} — ignored`);
+                }
+                continue;
+            }
+            if (BOOLEAN_KEYS.has(key)) {
+                if (typeof value === 'boolean') {
+                    out[key] = value;
+                }
+                else {
+                    log$f.warn(`config.${key}: expected boolean, got ${typeof value} — ignored`);
+                }
+                continue;
+            }
+            if (key in ENUM_KEYS) {
+                if (typeof value === 'string' && ENUM_KEYS[key].has(value)) {
+                    out[key] = value;
+                }
+                else {
+                    const allowed = Array.from(ENUM_KEYS[key]).join(', ');
+                    log$f.warn(`config.${key}: must be one of [${allowed}] — got ${JSON.stringify(value)}, ignored`);
+                }
+                continue;
+            }
+            if (ARRAY_KEYS.has(key)) {
+                if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+                    out[key] = value;
+                }
+                else {
+                    log$f.warn(`config.${key}: expected string[], got ${typeof value} — ignored`);
+                }
+                continue;
+            }
+            if (OBJECT_KEYS.has(key)) {
+                if (value && typeof value === 'object' && !Array.isArray(value)) {
+                    out[key] = value;
+                }
+                else {
+                    log$f.warn(`config.${key}: expected object, got ${typeof value} — ignored`);
+                }
+                continue;
+            }
+            log$f.warn(`config.${key}: unknown key — ignored`);
+        }
+        return out;
     }
-    /**
-     * Direction mappings for arrow keys.
-     */
+    // =============================================================================
+    // Direction maps
+    // =============================================================================
     const directionByKey = {
         ArrowDown: { axis: 'y', sign: 1, name: 'down' },
         ArrowUp: { axis: 'y', sign: -1, name: 'up' },
         ArrowRight: { axis: 'x', sign: 1, name: 'right' },
-        ArrowLeft: { axis: 'x', sign: -1, name: 'left' }
+        ArrowLeft: { axis: 'x', sign: -1, name: 'left' },
     };
     const directionByName = {
         down: directionByKey.ArrowDown,
         up: directionByKey.ArrowUp,
         right: directionByKey.ArrowRight,
-        left: directionByKey.ArrowLeft
+        left: directionByKey.ArrowLeft,
     };
     const directionKeys = ['down', 'up', 'right', 'left'];
 
@@ -204,7 +522,7 @@
             activeIndex: -1,
             lastMismatch: null,
             lastUpdate: 0,
-            lastDirection: ''
+            lastDirection: '',
         };
         // Performance monitoring
         state.perf = state.perf || {
@@ -212,7 +530,7 @@
             totalRefreshTime: 0,
             averageRefreshTime: 0,
             lastRefreshTime: 0,
-            slowRefreshCount: 0
+            slowRefreshCount: 0,
         };
         // Virtual scroll / infinite list state
         state.virtualContainers = state.virtualContainers || [];
@@ -239,6 +557,37 @@
      *
      * Handles element position calculations, visibility checks, and rect operations.
      */
+    const ZERO_RECT = typeof DOMRect !== 'undefined'
+        ? new DOMRect(0, 0, 0, 0)
+        : {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            toJSON: () => ({}),
+        };
+    /**
+     * Safe wrapper for `getBoundingClientRect()`.
+     *
+     * Defends against detached nodes / DOM-thrashing during mutation observer
+     * callbacks where calling `getBoundingClientRect()` can throw on some engines.
+     * Returns a zero-sized rect on failure so callers never need to null-check.
+     */
+    function safeGetBoundingClientRect(element) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') {
+            return ZERO_RECT;
+        }
+        try {
+            return element.getBoundingClientRect();
+        }
+        catch {
+            return ZERO_RECT;
+        }
+    }
     /**
      * Resolve the scroll container key for an element.
      * Uses caching to avoid repeated DOM traversals.
@@ -259,7 +608,9 @@
                 const key = node.id && node.id.length
                     ? '#' + node.id
                     : node.className && node.className.toString().trim().length
-                        ? node.tagName.toLowerCase() + '.' + node.className.toString().trim().split(/\s+/).slice(0, 2).join('.')
+                        ? node.tagName.toLowerCase() +
+                            '.' +
+                            node.className.toString().trim().split(/\s+/).slice(0, 2).join('.')
                         : node.tagName.toLowerCase();
                 state.scrollCache.set(element, key);
                 return key;
@@ -274,17 +625,17 @@
      * it to encompass a larger visual child (logo, image, etc).
      */
     function calculateVisualRect(element) {
-        let rect = element.getBoundingClientRect();
-        // Expansion: Check if element contains a single visual child that's larger
-        // (Common in logos or image buttons where the hit area is smaller than the asset)
+        let rect = safeGetBoundingClientRect(element);
+        // For elements like logos/image-buttons whose hit area is smaller than the
+        // visual asset, expand the rect to cover the larger child. This makes the
+        // focus indicator highlight what the user *sees*, not the tap target.
         const visualChild = element.querySelector('img, svg, video, picture, canvas');
         if (visualChild) {
-            const childRect = visualChild.getBoundingClientRect();
-            // Only expand if the child is actually larger or significantly offset
-            if (childRect.width > rect.width || childRect.height > rect.height ||
-                childRect.left < rect.left || childRect.top < rect.top) {
-                // Return a merged rect or just the child rect if it's the primary visual
-                // For most "logo" cases, the child rect is exactly what we want to highlight
+            const childRect = safeGetBoundingClientRect(visualChild);
+            if (childRect.width > rect.width ||
+                childRect.height > rect.height ||
+                childRect.left < rect.left ||
+                childRect.top < rect.top) {
                 rect = childRect;
             }
         }
@@ -298,9 +649,10 @@
         if (!entry || !entry.element || typeof entry.element.getBoundingClientRect !== 'function') {
             return null;
         }
-        // Use the base bounding rect for navigation logic (center points, distance, edges)
-        // This keeps navigation intuitive regardless of visual expansion (logos, etc.)
-        const rect = entry.element.getBoundingClientRect();
+        // Use the base bounding rect for navigation logic (center points, distance, edges).
+        // Visual expansion (logos, image-buttons) only affects the overlay rect via
+        // calculateVisualRect; navigation distances stay anchored to the real target.
+        const rect = safeGetBoundingClientRect(entry.element);
         entry.left = rect.left;
         entry.top = rect.top;
         entry.right = rect.right;
@@ -327,28 +679,36 @@
     }
 
     /**
-     * Runtime context detection (Injected script vs WebExtension).
+     * Runtime & platform detection.
      *
      * GeckoView can run this bundle either:
-     * - As a WebExtension content script (browser/chrome runtime APIs available)
-     * - As an injected script (no extension runtime APIs)
+     *  - As a WebExtension content script (browser/chrome runtime APIs available)
+     *  - As an injected script (no extension runtime APIs)
+     *
+     * Other hosts (ReactNative WebView, iOS WKWebView, Android WebView) expose
+     * different globals — {@link detectPlatform} returns a discriminated enum so
+     * the messaging factory can pick the right adapter.
+     */
+    function globalHost() {
+        return globalThis;
+    }
+    // ---------------------------------------------------------------------------
+    // Fine-grained runtime context (consumed by state / debug HUD)
+    // ---------------------------------------------------------------------------
+    /**
+     * Build a detailed runtime-context object used by the debug HUD and the
+     * {@link formatRuntimeLabel} instrumentation.
      */
     function detectRuntimeContext() {
-        const globalAny = globalThis;
-        const hasBrowser = typeof globalAny.browser !== 'undefined' && !!globalAny.browser;
-        const hasChrome = typeof globalAny.chrome !== 'undefined' && !!globalAny.chrome;
-        const runtime = globalAny.browser?.runtime ?? globalAny.chrome?.runtime;
+        const g = globalHost();
+        const hasBrowser = typeof g.browser !== 'undefined' && !!g.browser;
+        const hasChrome = typeof g.chrome !== 'undefined' && !!g.chrome;
+        const runtime = g.browser?.runtime ?? g.chrome?.runtime;
         const canConnect = typeof runtime?.connect === 'function';
         const canSendMessage = typeof runtime?.sendMessage === 'function';
         // If either browser/chrome exists, treat this as WebExtension mode.
-        const mode = (hasBrowser || hasChrome) ? 'webextension' : 'injected';
-        return {
-            mode,
-            hasBrowser,
-            hasChrome,
-            canConnect,
-            canSendMessage
-        };
+        const mode = hasBrowser || hasChrome ? 'webextension' : 'injected';
+        return { mode, hasBrowser, hasChrome, canConnect, canSendMessage };
     }
     function formatRuntimeLabel(context) {
         if (context.mode === 'webextension') {
@@ -364,6 +724,15 @@
      * Creates and manages Shadow DOM overlay for visual focus indicators.
      * Includes main focus overlay and directional preview elements.
      */
+    const log$e = createLogger('Overlay');
+    /** Returns true when build-time DEBUG is on or runtime opt-in is set. */
+    function isDebugActive() {
+        if (DEBUG)
+            return true;
+        if (typeof window === 'undefined')
+            return false;
+        return window.SPATIAL_NAV_DEBUG === true || window.flutterSpatialNavDebug === true;
+    }
     // Constants
     const styleId = 'spatnav-focus-styles';
     const overlayHostId = 'spatnav-focus-host';
@@ -376,8 +745,7 @@
      * Ensure CSS styles are injected into document head.
      * Removes default focus outlines since Shadow DOM provides visual indicator.
      */
-    function ensureStyles(config) {
-        /* eslint-disable max-len */
+    function ensureStyles(_config) {
         const css = `
 /* GeckoView Spatial Nav: Shadow DOM overlay provides focus indicator */
 *:focus,
@@ -417,7 +785,6 @@ body *:focus, body *:focus-visible {
     }
 }
 `;
-        /* eslint-enable max-len */
         let style = document.getElementById(styleId);
         if (!style) {
             style = document.createElement('style');
@@ -443,6 +810,10 @@ body *:focus, body *:focus-visible {
         host.id = overlayHostId;
         host.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: ${config.overlayZIndex || 2147483646};`;
         host.setAttribute(themeAttr, config.overlayTheme || 'default');
+        // Decorative — focus is communicated via the actual focused element. The
+        // overlay is purely visual chrome and should NOT be announced by AT.
+        host.setAttribute('role', 'presentation');
+        host.setAttribute('aria-hidden', 'true');
         document.body.appendChild(host);
         const shadow = host.attachShadow({ mode: 'open' });
         const shadowStyle = document.createElement('style');
@@ -484,7 +855,7 @@ body *:focus, body *:focus-visible {
             updateDebugHud(state);
         }
         else {
-            console.error('[SpatialNav] ❌ Failed to get overlay reference from shadow DOM!');
+            log$e.error('failed to get overlay reference from shadow DOM');
         }
         if (host.shadowRoot) {
             const previewRef = host.shadowRoot.getElementById('focus-preview-layer');
@@ -498,7 +869,7 @@ body *:focus, body *:focus-visible {
         if (!state.overlay)
             return;
         // Only show the runtime label in debug mode.
-        if (!window.flutterSpatialNavDebug) {
+        if (!isDebugActive()) {
             state.overlay.removeAttribute(runtimeAttr);
             return;
         }
@@ -517,8 +888,7 @@ body *:focus, body *:focus-visible {
         const hud = shadow.getElementById(debugHudId);
         if (!hud)
             return;
-        const debugEnabled = !!window.flutterSpatialNavDebug;
-        if (!debugEnabled) {
+        if (!isDebugActive()) {
             hud.style.display = 'none';
             return;
         }
@@ -526,8 +896,8 @@ body *:focus, body *:focus-visible {
         const suppressed = state.overlaySuppressed ? 'suppressed' : 'active';
         hud.textContent = `SpatialNav · ${runtime} · ${suppressed}`;
         const safe = Math.max(0, state.config?.safeAreaMargin ?? 0);
-        hud.style.left = (safe + 8) + 'px';
-        hud.style.top = (safe + 8) + 'px';
+        hud.style.left = safe + 8 + 'px';
+        hud.style.top = safe + 8 + 'px';
         hud.style.display = 'block';
     }
     function getElementLabelText(element) {
@@ -573,8 +943,7 @@ body *:focus, body *:focus-visible {
         const label = shadow.getElementById(overlayLabelId);
         if (!label)
             return;
-        const debugEnabled = !!window.flutterSpatialNavDebug;
-        if (!debugEnabled) {
+        if (!isDebugActive()) {
             label.classList.remove('visible');
             return;
         }
@@ -614,7 +983,9 @@ body *:focus, body *:focus-visible {
      * Parse color string to extract RGB components for opacity variants.
      */
     function parseColor(color) {
-        const defaultRGB = { r: 255, g: 193, b: 7 };
+        // Default matches DEFAULT_FOCUS_COLOR (#1565C0) in core/config.ts — kept in
+        // sync so a missing/malformed user color doesn't fall back to amber.
+        const defaultRGB = { r: 21, g: 101, b: 192 };
         if (!color || typeof color !== 'string') {
             return defaultRGB;
         }
@@ -625,14 +996,14 @@ body *:focus, body *:focus-visible {
                 return {
                     r: parseInt(hex[0] + hex[0], 16),
                     g: parseInt(hex[1] + hex[1], 16),
-                    b: parseInt(hex[2] + hex[2], 16)
+                    b: parseInt(hex[2] + hex[2], 16),
                 };
             }
             else if (hex.length === 6) {
                 return {
                     r: parseInt(hex.slice(0, 2), 16),
                     g: parseInt(hex.slice(2, 4), 16),
-                    b: parseInt(hex.slice(4, 6), 16)
+                    b: parseInt(hex.slice(4, 6), 16),
                 };
             }
         }
@@ -642,7 +1013,7 @@ body *:focus, body *:focus-visible {
             return {
                 r: parseInt(rgbMatch[1], 10),
                 g: parseInt(rgbMatch[2], 10),
-                b: parseInt(rgbMatch[3], 10)
+                b: parseInt(rgbMatch[3], 10),
             };
         }
         return defaultRGB;
@@ -660,7 +1031,7 @@ body *:focus, body *:focus-visible {
                 rgb = {
                     r: Math.min(255, Math.round(rgb.r * 1.3)),
                     g: Math.min(255, Math.round(rgb.g * 1.3)),
-                    b: Math.min(255, Math.round(rgb.b * 1.3))
+                    b: Math.min(255, Math.round(rgb.b * 1.3)),
                 };
             }
         }
@@ -860,7 +1231,7 @@ body *:focus, body *:focus-visible {
             `  #${focusOverlayId}.pulse {`,
             '    animation: none;',
             '  }',
-            '}'
+            '}',
         ].join('\n');
     }
     /**
@@ -892,8 +1263,12 @@ body *:focus, body *:focus-visible {
         const outlineWidth = config.outlineWidth || 3;
         const safeAreaMargin = Math.max(0, config.safeAreaMargin ?? 0);
         const totalMargin = outlineWidth + outlineOffset + 2 + safeAreaMargin; // Extra safety buffer
-        element ? (element.tagName.toLowerCase() + (element.id ? '#' + element.id : '')) : '(null)';
-        // console.log(`[SpatialNav] Overlay positioned on ${elDesc}: L=${rect.left.toFixed(1)}, T=${rect.top.toFixed(1)}, W=${rect.width.toFixed(1)}, H=${rect.height.toFixed(1)}`);
+        log$e.debug(`overlay positioned on ${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}`, {
+            L: rect.left.toFixed(1),
+            T: rect.top.toFixed(1),
+            W: rect.width.toFixed(1),
+            H: rect.height.toFixed(1),
+        });
         overlay.style.display = 'block';
         overlay.classList.add('visible');
         // Apply positions with viewport clamping to prevent outline from being cut at edges
@@ -903,8 +1278,8 @@ body *:focus, body *:focus-visible {
         const bottom = Math.min(window.innerHeight - totalMargin, rect.bottom);
         overlay.style.left = left + 'px';
         overlay.style.top = top + 'px';
-        overlay.style.width = (right - left) + 'px';
-        overlay.style.height = (bottom - top) + 'px';
+        overlay.style.width = right - left + 'px';
+        overlay.style.height = bottom - top + 'px';
         overlay.style.borderRadius = effectiveRadius;
         updateDebugHud(state);
         updateFocusLabel(state, element, { left, top, width: right - left});
@@ -943,8 +1318,8 @@ body *:focus, body *:focus-visible {
                     const bottom = Math.min(window.innerHeight - totalMargin, newRect.bottom);
                     overlay.style.left = left + 'px';
                     overlay.style.top = top + 'px';
-                    overlay.style.width = (right - left) + 'px';
-                    overlay.style.height = (bottom - top) + 'px';
+                    overlay.style.width = right - left + 'px';
+                    overlay.style.height = bottom - top + 'px';
                 }
             });
             ro.observe(element);
@@ -999,7 +1374,7 @@ body *:focus, body *:focus-visible {
                 state.previewLayer.appendChild(container);
                 elements[direction] = {
                     container: container,
-                    arrow: arrow
+                    arrow: arrow,
                 };
             });
             state.previewElements = elements;
@@ -1234,7 +1609,7 @@ body *:focus, body *:focus-visible {
         leaf(id) {
             const lastDot = id.lastIndexOf('.');
             return lastDot > 0 ? id.substring(lastDot + 1) : id;
-        }
+        },
     };
     /**
      * Represents a logical group of focusable elements.
@@ -1255,7 +1630,7 @@ body *:focus, body *:focus-visible {
                 enterMode: options.enterMode || 'default',
                 priority: options.priority ?? 0,
                 inheritOptions: options.inheritOptions !== false,
-                ...options
+                ...options,
             };
             this.lastFocused = null;
             this._depth = GroupPath.depth(id);
@@ -1290,7 +1665,7 @@ body *:focus, body *:focus-visible {
                 ...parentOptions,
                 ...this.options,
                 // Don't inherit ID-specific options
-                priority: this.options.priority
+                priority: this.options.priority,
             };
         }
         /**
@@ -1332,7 +1707,7 @@ body *:focus, body *:focus-visible {
                 while (ancestor) {
                     if (!ancestor.lastFocused || !document.body.contains(ancestor.lastFocused.element)) {
                         // Find the member in ancestor that contains this entry
-                        const memberInAncestor = ancestor.members.find(m => m.element.contains(entry.element) || m.element === entry.element);
+                        const memberInAncestor = ancestor.members.find((m) => m.element.contains(entry.element) || m.element === entry.element);
                         if (memberInAncestor) {
                             ancestor.lastFocused = memberInAncestor;
                         }
@@ -1343,7 +1718,9 @@ body *:focus, body *:focus-visible {
         }
         getPreferredEntry() {
             const effectiveOptions = this.getEffectiveOptions();
-            if (effectiveOptions.enterMode === 'last' && this.lastFocused && document.body.contains(this.lastFocused.element)) {
+            if (effectiveOptions.enterMode === 'last' &&
+                this.lastFocused &&
+                document.body.contains(this.lastFocused.element)) {
                 return this.lastFocused;
             }
             if (effectiveOptions.enterMode === 'first' || effectiveOptions.enterMode === 'default') {
@@ -1407,8 +1784,8 @@ body *:focus, body *:focus-visible {
         const id = parts[0].trim();
         const options = {};
         if (parts.length > 1) {
-            parts.slice(1).forEach(part => {
-                const [key, value] = part.split('=').map(s => s.trim());
+            parts.slice(1).forEach((part) => {
+                const [key, value] = part.split('=').map((s) => s.trim());
                 if (key && value) {
                     if (value === 'true')
                         options[key] = true;
@@ -1448,19 +1825,20 @@ body *:focus, body *:focus-visible {
      *
      * Keeps geometry in sync for lazily-loaded elements that enter the viewport.
      */
+    const log$d = createLogger('Intersection');
     function supportsIntersectionObserver() {
         return typeof window !== 'undefined' && typeof window.IntersectionObserver !== 'undefined';
     }
     function createObserver(state) {
         if (!supportsIntersectionObserver()) {
-            console.warn('[SpatialNav] IntersectionObserver unsupported in this environment');
+            log$d.debug('IntersectionObserver unsupported in this environment');
             return null;
         }
         const config = state.config; // Assuming proper config
         const options = {
             root: null,
             rootMargin: config.intersectionRootMargin || '200px',
-            threshold: config.intersectionThreshold || 0
+            threshold: config.intersectionThreshold || 0,
         };
         const observer = new IntersectionObserver((entries) => {
             entries.forEach((entry) => {
@@ -1504,8 +1882,8 @@ body *:focus, body *:focus-visible {
                         state.intersectionObserver.observe(element);
                     }
                 }
-                catch (err) {
-                    // Ignore observation failures (detached nodes, etc.)
+                catch {
+                    // Ignore observation failures (detached nodes, etc.).
                 }
             });
         }
@@ -1517,7 +1895,7 @@ body *:focus, body *:focus-visible {
         try {
             state.intersectionObserver.observe(element);
         }
-        catch (err) {
+        catch {
             // ignore
         }
     }
@@ -1528,7 +1906,7 @@ body *:focus, body *:focus-visible {
         try {
             state.intersectionObserver.unobserve(element);
         }
-        catch (err) {
+        catch {
             // ignore
         }
     }
@@ -1545,6 +1923,9 @@ body *:focus, body *:focus-visible {
      * Handles element discovery, focus management, and element description.
      * Features Shadow DOM traversal, virtual scroll detection, and accessibility announcer.
      */
+    const log$c = createLogger('DOM');
+    /** Threshold above which a focusable refresh is logged as slow (ms). */
+    const SLOW_REFRESH_THRESHOLD_MS = 50;
     const focusableSelector = 'a[href], a[aria-haspopup], [role="link"], button:not([disabled]), [role="button"], [aria-haspopup="true"], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
     // ===== Shadow DOM Traversal =====
     /**
@@ -1568,7 +1949,8 @@ body *:focus, body *:focus-visible {
         if (visited.has(root)) {
             return results;
         }
-        if (root.nodeType === 11) { // ShadowRoot
+        if (root.nodeType === 11) {
+            // ShadowRoot
             visited.add(root);
         }
         // Light DOM focusables
@@ -1600,7 +1982,7 @@ body *:focus, body *:focus-visible {
             }
         }
         catch (e) {
-            console.warn('[SpatialNav] Shadow DOM traversal error:', e);
+            log$c.warn('shadow DOM traversal error', e);
         }
         // Flatten slot assignments (distributed content)
         try {
@@ -1675,19 +2057,18 @@ body *:focus, body *:focus-visible {
         if (containers.length === 0) {
             return;
         }
-        // console.log('[SpatialNav] Detected', containers.length, 'virtual scroll containers');
+        log$c.debug(`detected ${containers.length} virtual scroll containers`);
         const debounceMs = config.virtualScrollDebounce || 150;
         let debounceTimer = null;
         const observer = new IntersectionObserver((entries) => {
-            const shouldRefresh = entries.some(entry => entry.isIntersecting);
+            const shouldRefresh = entries.some((entry) => entry.isIntersecting);
             if (shouldRefresh && !state.virtualScrollPending) {
                 state.virtualScrollPending = true;
                 if (debounceTimer) {
                     clearTimeout(debounceTimer);
                 }
                 debounceTimer = setTimeout(() => {
-                    // console.log('[SpatialNav] Virtual scroll sentinel triggered refresh');
-                    // Import dynamically to avoid circular dependency
+                    log$c.debug('virtual scroll sentinel triggered refresh');
                     refreshFocusables(state);
                     state.virtualScrollPending = false;
                     state.dirty = true; // Invalidate precomputed cache
@@ -1695,7 +2076,7 @@ body *:focus, body *:focus-visible {
             }
         }, {
             rootMargin: '300px',
-            threshold: 0
+            threshold: 0,
         });
         // Observe sentinel elements (first and last visible children)
         for (const container of containers) {
@@ -1745,7 +2126,7 @@ body *:focus, body *:focus-visible {
                     'white-space: nowrap !important;' +
                     'border: 0 !important;';
             document.body.appendChild(announcer);
-            // console.log('[SpatialNav] Accessibility announcer created');
+            log$c.debug('accessibility announcer created');
         }
         state.announcer = announcer;
     }
@@ -1808,13 +2189,13 @@ body *:focus, body *:focus-visible {
         // Add role information
         const role = el.getAttribute('role') || el.tagName.toLowerCase();
         const roleNames = {
-            'a': 'link',
-            'button': 'button',
-            'input': el.type || 'text field',
-            'select': 'dropdown',
-            'textarea': 'text area',
-            'checkbox': 'checkbox',
-            'radio': 'radio button'
+            a: 'link',
+            button: 'button',
+            input: el.type || 'text field',
+            select: 'dropdown',
+            textarea: 'text area',
+            checkbox: 'checkbox',
+            radio: 'radio button',
         };
         const roleName = roleNames[role] || role;
         if (config && config.verboseDescriptions) {
@@ -1868,14 +2249,12 @@ body *:focus, body *:focus-visible {
         let nodes;
         if (config.traverseShadowDom) {
             nodes = findFocusablesDeep(document, config);
-            // console.log('[SpatialNav] Shadow DOM traversal found', nodes.length, 'focusables');
+            log$c.debug(`shadow DOM traversal found ${nodes.length} focusables`);
         }
         else {
             nodes = Array.from(document.querySelectorAll(focusableSelector));
         }
-        if (window.flutterSpatialNavDebug) {
-            console.log(`[SpatialNav] Candidate nodes found: ${nodes.length}`);
-        }
+        log$c.debug(`candidate nodes found: ${nodes.length}`);
         // Add iframes if iframe support is enabled
         if (config.iframeSupport && config.iframeSupport.enabled) {
             try {
@@ -1887,7 +2266,7 @@ body *:focus, body *:focus-visible {
                 });
             }
             catch (err) {
-                console.warn('[SpatialNav] iframe selector failed:', err);
+                log$c.warn('iframe selector failed', err);
             }
         }
         const results = [];
@@ -1898,47 +2277,36 @@ body *:focus, body *:focus-visible {
         state.focusGroups = {};
         for (let i = 0; i < nodes.length; i++) {
             const el = nodes[i];
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             if (!el || typeof el.getBoundingClientRect !== 'function') {
                 continue;
             }
             const style = window.getComputedStyle(el);
-            if (!style || style.visibility === 'hidden' || style.display === 'none' || el.disabled) {
-                /*
-                if ((window as any).flutterSpatialNavDebug) {
-                    console.log(`[SpatialNav] Skipping hidden/disabled element: ${describeElement(el as HTMLElement)} (vis=${style?.visibility}, display=${style?.display}, disabled=${(el as any).disabled})`);
-                }
-                */
+            if (!style ||
+                style.visibility === 'hidden' ||
+                style.display === 'none' ||
+                el.disabled) {
                 continue;
             }
             const entry = {
                 element: el,
-                index: i // Temporary index, will be fixed in results array
+                index: i,
             };
             updateEntryGeometry(entry, state);
-            // Skip tiny elements based on configuration
             const minSize = state.config.minElementSize || 1;
-            if (!entry.rect || entry.width <= 1 || entry.height <= 1 || entry.width < minSize || entry.height < minSize) {
-                /*
-                if ((window as any).flutterSpatialNavDebug) {
-                    console.log(`[SpatialNav] Skipping tiny/invalid element: ${describeElement(el as HTMLElement)} (width: ${entry.width}, height: ${entry.height})`);
-                }
-                */
+            if (!entry.rect ||
+                entry.width <= 1 ||
+                entry.height <= 1 ||
+                entry.width < minSize ||
+                entry.height < minSize) {
                 continue;
             }
-            if (window.flutterSpatialNavDebug && results.length < 50) ;
             const ariaHidden = el.closest('[aria-hidden="true"]');
             if (ariaHidden) {
-                /*
-                if ((window as any).flutterSpatialNavDebug) {
-                    console.log(`[SpatialNav] Skipping aria-hidden element: ${describeElement(el as HTMLElement)} (inside ${describeElement(ariaHidden as HTMLElement)})`);
-                }
-                */
-                // Remove from results if we already added it (we shouldn't have)
                 continue;
             }
-            // Visible in viewport check
-            if (!isRectVisible(entry.rect, 0)) ;
+            // Off-screen elements remain in the candidate list — many apps host
+            // legitimate off-screen content (carousels, virtual lists). The
+            // scorer applies an OFFSCREEN_PENALTY rather than excluding them.
             // Focus Group Logic
             const groupContainer = findFocusGroupContainer(el);
             if (groupContainer) {
@@ -1965,7 +2333,7 @@ body *:focus, body *:focus-visible {
             entry.index = index;
         });
         state.focusables = results;
-        state.focusableElements = results.map(item => item.element);
+        state.focusableElements = results.map((item) => item.element);
         state.focusableCount = results.length;
         state.currentIndex = state.focusableElements.indexOf(document.activeElement);
         syncIntersectionObserver(state);
@@ -1986,9 +2354,9 @@ body *:focus, body *:focus-visible {
             state.perf.totalRefreshTime += duration;
             state.perf.averageRefreshTime = state.perf.totalRefreshTime / state.perf.refreshCount;
             state.perf.lastRefreshTime = duration;
-            if (duration > 50) {
+            if (duration > SLOW_REFRESH_THRESHOLD_MS) {
                 state.perf.slowRefreshCount++;
-                console.warn(`[SpatialNav] Slow refresh: ${duration.toFixed(2)}ms (${results.length} elements)`);
+                log$c.warn(`slow refresh: ${duration.toFixed(2)}ms (${results.length} elements)`);
             }
         }
     }
@@ -2005,7 +2373,9 @@ body *:focus, body *:focus-visible {
                 oldEl.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, cancelable: true, view: window }));
                 oldEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, cancelable: false, view: window }));
             }
-            catch { /* ignore */ }
+            catch {
+                /* ignore */
+            }
         }
         if (newEl) {
             try {
@@ -2014,7 +2384,9 @@ body *:focus, body *:focus-visible {
                 // Some sites might need mousemove to trigger tooltips
                 newEl.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window }));
             }
-            catch { /* ignore */ }
+            catch {
+                /* ignore */
+            }
         }
     }
     /**
@@ -2029,7 +2401,10 @@ body *:focus, body *:focus-visible {
             return;
         }
         const style = window.getComputedStyle(el);
-        if (!style || style.visibility === 'hidden' || style.display === 'none' || el.disabled) {
+        if (!style ||
+            style.visibility === 'hidden' ||
+            style.display === 'none' ||
+            el.disabled) {
             return;
         }
         const entry = { element: el };
@@ -2052,10 +2427,10 @@ body *:focus, body *:focus-visible {
         state.focusables.push(entry);
         state.focusableElements.push(el);
         // Re-index all entries
-        state.focusables.forEach((e, i) => e.index = i);
+        state.focusables.forEach((e, i) => (e.index = i));
         state.focusableCount = state.focusables.length;
         observeNewElement(state, el);
-        // console.log('[SpatialNav] Inserted entry:', describeElement(el));
+        log$c.debug('inserted entry', describeElement(el));
     }
     /**
      * Remove a focusable entry from the state by index.
@@ -2069,7 +2444,7 @@ body *:focus, body *:focus-visible {
             return;
         }
         const entry = state.focusables[idx];
-        // console.log('[SpatialNav] Removing entry:', describeElement(entry.element));
+        log$c.debug('removing entry', describeElement(entry.element));
         // Remove from focus group
         if (entry.groupId) {
             const group = state.focusGroups[entry.groupId];
@@ -2084,7 +2459,7 @@ body *:focus, body *:focus-visible {
             state.lastFocusedElement = null;
         }
         // Re-index
-        state.focusables.forEach((e, i) => e.index = i);
+        state.focusables.forEach((e, i) => (e.index = i));
         state.focusableCount = state.focusables.length;
         // Update currentIndex if needed
         if (state.currentIndex === idx) {
@@ -2133,7 +2508,7 @@ body *:focus, body *:focus-visible {
                 }
             }
         }
-        // console.log('[SpatialNav] Incremental refresh complete:', state.focusables.length, 'focusables');
+        log$c.debug(`incremental refresh complete: ${state.focusables.length} focusables`);
     }
 
     /**
@@ -2161,7 +2536,7 @@ body *:focus, body *:focus-visible {
             return {
                 contain: 'auto',
                 action: 'auto',
-                function: 'normal'
+                function: 'normal',
             };
         }
         try {
@@ -2171,15 +2546,15 @@ body *:focus, body *:focus-visible {
             const functionValue = style.getPropertyValue('--spatial-navigation-function').trim();
             return {
                 contain: containValue === 'contain' ? 'contain' : 'auto',
-                action: (actionValue === 'focus' || actionValue === 'scroll') ? actionValue : 'auto',
-                function: functionValue === 'grid' ? 'grid' : 'normal'
+                action: actionValue === 'focus' || actionValue === 'scroll' ? actionValue : 'auto',
+                function: functionValue === 'grid' ? 'grid' : 'normal',
             };
         }
         catch {
             return {
                 contain: 'auto',
                 action: 'auto',
-                function: 'normal'
+                function: 'normal',
             };
         }
     }
@@ -2243,22 +2618,21 @@ body *:focus, body *:focus-visible {
         const container = findNavigationContainer(element);
         return {
             contained: container !== null,
-            container
+            container,
         };
     }
 
     /**
-     * Scoring algorithm for GeckoView Spatial Navigation System
+     * Scoring algorithm for GeckoView Spatial Navigation.
      *
      * Implements geometric and grid-based scoring for directional candidate selection.
      * Uses multi-pass selection with progressively relaxed constraints.
      *
-     * Features:
-     * - Grid mode for aligned layouts (BBC LRUD-inspired)
-     * - Multiple distance functions (euclidean, manhattan, projected)
-     * - Configurable overlap threshold
-     * - CSS custom property integration
+     * See {@link SCORING_CONSTANTS} in `core/config.ts` for the score-weight hierarchy
+     * — the comments there explain *why* `SAME_GROUP_BONUS > GROUP_ENTER_LAST_BONUS >
+     * GRID_BONUS > scroll-related nudges` is the right ordering.
      */
+    const log$b = createLogger('Scoring');
     /**
      * Calculate distance between two points using specified function.
      */
@@ -2267,12 +2641,12 @@ body *:focus, body *:focus-visible {
             case 'manhattan':
                 return Math.abs(dx) + Math.abs(dy);
             case 'projected':
-                // Project distance along navigation axis (WICG-style)
+                // Project distance along navigation axis (WICG-style).
+                // Weight the secondary axis lightly to prefer aligned candidates.
                 if (direction) {
                     const primary = direction.axis === 'x' ? Math.abs(dx) : Math.abs(dy);
                     const secondary = direction.axis === 'x' ? Math.abs(dy) : Math.abs(dx);
-                    // Weight primary axis 2x to prefer aligned elements
-                    return primary + secondary * 0.5;
+                    return primary + secondary * SCORING_CONSTANTS.PROJECTED_SECONDARY_WEIGHT;
                 }
                 return Math.sqrt(dx * dx + dy * dy);
             case 'euclidean':
@@ -2286,13 +2660,13 @@ body *:focus, body *:focus-visible {
      */
     function isGridAligned(current, candidate, direction, tolerance) {
         if (direction.axis === 'x') {
-            // Horizontal navigation: check if on same row (vertical alignment)
+            // Horizontal nav: same row → vertical alignment
             const currentMidY = (current.top + current.bottom) / 2;
             const candidateMidY = (candidate.top + candidate.bottom) / 2;
             return Math.abs(currentMidY - candidateMidY) <= tolerance;
         }
         else {
-            // Vertical navigation: check if on same column (horizontal alignment)
+            // Vertical nav: same column → horizontal alignment
             const currentMidX = (current.left + current.right) / 2;
             const candidateMidX = (candidate.left + candidate.right) / 2;
             return Math.abs(currentMidX - candidateMidX) <= tolerance;
@@ -2309,68 +2683,51 @@ body *:focus, body *:focus-visible {
         const allowOverlap = options.allowOverlap === true;
         const overlapThreshold = options.overlapThreshold ?? config.overlapThreshold ?? 0;
         const distanceFunction = options.distanceFunction ?? config.distanceFunction ?? 'euclidean';
-        const EPSILON = 1;
-        const EDGE_EPS = 4 + overlapThreshold;
-        describeElement(candidate.element);
-        // Strict edge checking (pass 1)
+        const edgeEps = SCORING_CONSTANTS.EDGE_EPS_BASE + overlapThreshold;
+        // Strict edge containment (pass 1)
         if (strictEdges) {
             if (axis === 'x') {
-                if (sign > 0 && candidate.left < current.right - EDGE_EPS) {
-                    // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: strictEdge right (cand.left ${candidate.left.toFixed(1)} < curr.right ${current.right.toFixed(1)})`);
+                if (sign > 0 && candidate.left < current.right - edgeEps)
                     return null;
-                }
-                if (sign < 0 && candidate.right > current.left + EDGE_EPS) {
-                    // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: strictEdge left (cand.right ${candidate.right.toFixed(1)} > curr.left ${current.left.toFixed(1)})`);
+                if (sign < 0 && candidate.right > current.left + edgeEps)
                     return null;
-                }
             }
             else {
-                if (sign > 0 && candidate.top < current.bottom - EDGE_EPS) {
-                    // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: strictEdge down (cand.top ${candidate.top.toFixed(1)} < curr.bottom ${current.bottom.toFixed(1)})`);
+                if (sign > 0 && candidate.top < current.bottom - edgeEps)
                     return null;
-                }
-                if (sign < 0 && candidate.bottom > current.top + EDGE_EPS) {
-                    // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: strictEdge up (cand.bottom ${candidate.bottom.toFixed(1)} > curr.top ${current.top.toFixed(1)})`);
+                if (sign < 0 && candidate.bottom > current.top + edgeEps)
                     return null;
-                }
             }
         }
         const deltaX = candidate.centerX - current.centerX;
         const deltaY = candidate.centerY - current.centerY;
-        const forwardThreshold = allowOverlap ? -(12 + overlapThreshold) : EPSILON;
+        const forwardThreshold = allowOverlap
+            ? -(SCORING_CONSTANTS.FORWARD_OVERLAP_TOLERANCE_PX + overlapThreshold)
+            : SCORING_CONSTANTS.EPSILON;
         // Forward movement check
         if (axis === 'x') {
-            if (sign > 0 && deltaX <= forwardThreshold) {
-                // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: notForward right (deltaX ${deltaX.toFixed(1)} <= ${forwardThreshold.toFixed(1)})`);
+            if (sign > 0 && deltaX <= forwardThreshold)
                 return null;
-            }
-            if (sign < 0 && deltaX >= -forwardThreshold) {
-                // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: notForward left (deltaX ${deltaX.toFixed(1)} >= ${(-forwardThreshold).toFixed(1)})`);
+            if (sign < 0 && deltaX >= -forwardThreshold)
                 return null;
-            }
         }
         else {
-            if (sign > 0 && deltaY <= forwardThreshold) {
-                // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: notForward down (deltaY ${deltaY.toFixed(1)} <= ${forwardThreshold.toFixed(1)})`);
+            if (sign > 0 && deltaY <= forwardThreshold)
                 return null;
-            }
-            if (sign < 0 && deltaY >= -forwardThreshold) {
-                // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candDesc}: notForward up (deltaY ${deltaY.toFixed(1)} >= ${(-forwardThreshold).toFixed(1)})`);
+            if (sign < 0 && deltaY >= -forwardThreshold)
                 return null;
-            }
         }
-        // Calculate alignment and distance
         const primary = Math.abs(axis === 'x' ? deltaX : deltaY);
         const secondary = Math.abs(axis === 'x' ? deltaY : deltaX);
         const distance = calculateDistance(deltaX, deltaY, distanceFunction, direction);
-        // Cone check: reject candidates that are too far off-axis
-        if (secondary > Math.max(4, primary * 3)) {
-            // if ((window as any).flutterSpatialNavDebug) console.log(`[SpatialNav] Reject ${candidate.element?.id || candidate.element?.tagName}: offAxisCone (primary ${primary.toFixed(1)}, secondary ${secondary.toFixed(1)})`);
+        // Cone check: reject candidates too far off-axis.
+        const coneTolerance = Math.max(SCORING_CONSTANTS.CONE_TOLERANCE_BASE_PX, primary * SCORING_CONSTANTS.CONE_TOLERANCE_RATIO);
+        if (secondary > coneTolerance)
             return null;
-        }
-        // Alignment score: higher is better (more aligned)
-        const alignment = secondary === 0 ? 10 : Math.max(0, 10 - secondary / 50);
-        // Grid alignment check
+        // Alignment score: higher = more aligned. Decays linearly until hitting 0.
+        const alignment = secondary === 0
+            ? SCORING_CONSTANTS.ALIGNMENT_BASE
+            : Math.max(0, SCORING_CONSTANTS.ALIGNMENT_BASE - secondary / SCORING_CONSTANTS.ALIGNMENT_DECAY_PX);
         const gridAligned = isGridAligned(current, candidate, direction, config.gridAlignmentTolerance);
         return {
             primary,
@@ -2394,111 +2751,90 @@ body *:focus, body *:focus-visible {
             return null;
         }
         updateEntryGeometry(currentEntry, state);
-        // Extract options with defaults
         const strictEdges = options.strictEdges !== false;
         const allowOverlap = options.allowOverlap === true;
         const requireViewport = options.requireViewport !== false;
         const viewportMargin = options.viewportMargin ?? 0;
-        const alignmentWeight = options.alignmentWeight ?? 10;
+        const alignmentWeight = options.alignmentWeight ?? SCORING_CONSTANTS.ALIGNMENT_BASE;
         const distanceWeight = options.distanceWeight ?? 1;
         const preferScrollGroup = options.preferScrollGroup !== false;
-        // Get effective scoring mode (combines config + CSS property)
         const effectiveScoringMode = config.useCSSProperties && currentEntry.element
             ? getEffectiveScoringMode(currentEntry.element)
             : (options.scoringMode ?? config.scoringMode ?? 'geometric');
-        const gridBonus = effectiveScoringMode === 'grid' ? 500 : 0;
-        // Check for CSS navigation containment
+        const gridBonus = effectiveScoringMode === 'grid' ? SCORING_CONSTANTS.GRID_BONUS : 0;
         const containmentInfo = config.useCSSProperties && currentEntry.element
             ? hasNavigationContainment(currentEntry.element)
             : { contained: false, container: null };
         const candidates = [];
-        // Evaluate all focusables as candidates
         for (let i = 0; i < state.focusables.length; i++) {
-            if (i === currentIndex) {
+            if (i === currentIndex)
                 continue;
-            }
             const candidateEntry = state.focusables[i];
-            if (!candidateEntry || !candidateEntry.element) {
+            if (!candidateEntry || !candidateEntry.element)
                 continue;
-            }
             updateEntryGeometry(candidateEntry, state);
-            // Skip tiny or invalid rects
             const minSize = config.minElementSize || 1;
             if (!candidateEntry.rect || candidateEntry.width < minSize || candidateEntry.height < minSize) {
                 continue;
             }
-            // Viewport visibility check
             if (requireViewport && !isRectVisible(candidateEntry.rect, viewportMargin)) {
                 continue;
             }
-            // CSS containment check: if current is contained, only allow candidates within same container
+            // CSS containment: stay within the container if current element is contained.
             if (containmentInfo.contained && containmentInfo.container && candidateEntry.element) {
                 if (!containmentInfo.container.contains(candidateEntry.element)) {
-                    continue; // Skip candidates outside the navigation container
+                    continue;
                 }
             }
-            // Compute directional metrics with full options
             const metrics = computeDirectionalMetrics(currentEntry, candidateEntry, direction, {
                 strictEdges,
                 allowOverlap,
                 overlapThreshold: options.overlapThreshold,
                 distanceFunction: options.distanceFunction,
             });
-            if (!metrics) {
-                // Log rejection reason only in debug mode or for specific IDs
-                /*
-                if ((window as any).flutterSpatialNavDebug) {
-                    console.log(`[SpatialNav] Candidate '${candidateEntry.element?.id || candidateEntry.element?.tagName}' rejected by metrics in direction ${direction.name}`);
-                }
-                */
+            if (!metrics)
                 continue;
-            }
-            // Calculate score: lower is better
-            let score = metrics.primary * 1000 +
+            // Linear score: lower = better. Primary axis dominates by 1000x.
+            let score = metrics.primary * SCORING_CONSTANTS.PRIMARY_WEIGHT +
                 metrics.secondary * alignmentWeight +
                 metrics.distance * distanceWeight;
-            // Grid mode bonus for aligned elements
             if (gridBonus && metrics.gridAligned) {
                 score -= gridBonus;
             }
-            // Focus Group Logic
+            // Focus group logic — see SCORING_CONSTANTS for the bonus hierarchy rationale.
             const currentGroupId = currentEntry.groupId;
             const candidateGroupId = candidateEntry.groupId;
             if (currentGroupId) {
                 const currentGroup = state.focusGroups[currentGroupId];
                 const isSameGroup = currentGroupId === candidateGroupId;
-                // Boundary: contain - prevent leaving group
+                // Boundary: contain → don't allow crossing the group's boundary
                 if (currentGroup && currentGroup.options.boundary === 'contain' && !isSameGroup) {
                     continue;
                 }
-                // Priority: prefer staying in group
                 if (isSameGroup) {
-                    score -= 2000;
+                    score -= SCORING_CONSTANTS.SAME_GROUP_BONUS;
                 }
             }
-            // Group Entry Logic
             if (candidateGroupId && candidateGroupId !== currentGroupId) {
                 const candidateGroup = state.focusGroups[candidateGroupId];
-                // If entering a group with 'last' mode, only allow entry via lastFocused
+                // enterMode=last: only allow entry via the remembered last-focused element.
                 if (candidateGroup && candidateGroup.options.enterMode === 'last' && candidateGroup.lastFocused) {
                     if (candidateEntry.element !== candidateGroup.lastFocused.element) {
                         continue;
                     }
-                    score -= 1000;
+                    score -= SCORING_CONSTANTS.GROUP_ENTER_LAST_BONUS;
                 }
             }
-            // Prefer elements in same scroll container
             if (preferScrollGroup) {
                 if (candidateEntry.scrollKey && candidateEntry.scrollKey === currentEntry.scrollKey) {
-                    score -= 150;
+                    score -= SCORING_CONSTANTS.SAME_SCROLL_BONUS;
                 }
                 else {
-                    score += 75;
+                    score += SCORING_CONSTANTS.DIFFERENT_SCROLL_PENALTY;
                 }
             }
-            // Penalty for off-screen elements
             if (!isRectVisible(candidateEntry.rect, 0)) {
-                score += 120;
+                score += SCORING_CONSTANTS.OFFSCREEN_PENALTY;
             }
             candidates.push({
                 index: i,
@@ -2508,12 +2844,10 @@ body *:focus, body *:focus-visible {
                 metrics,
             });
         }
-        if (!candidates.length) {
+        if (!candidates.length)
             return null;
-        }
-        // Sort by score (lower is better), then by distance
+        // Sort by score (lower wins), then distance as tiebreaker.
         candidates.sort((a, b) => {
-            // Grid mode: grid-aligned elements first
             if (effectiveScoringMode === 'grid') {
                 if (a.metrics.gridAligned !== b.metrics.gridAligned) {
                     return a.metrics.gridAligned ? -1 : 1;
@@ -2528,17 +2862,15 @@ body *:focus, body *:focus-visible {
     }
     /**
      * Find directional candidate using multi-pass selection.
-     * Uses progressively relaxed constraints across 3 passes.
-     * If wrapNavigation is enabled and no candidate found, wraps to opposite edge.
+     * Uses progressively relaxed constraints across 3 passes; each pass exits
+     * early on first hit. Wraps to the opposite edge if `wrapNavigation` is set
+     * and no candidate is found.
      */
     function findDirectionalCandidate(currentIndex, direction, state) {
-        if (!direction) {
+        if (!direction)
             return null;
-        }
-        state.focusables[currentIndex];
-        // Three-pass selection with progressively relaxed constraints
         const passes = [
-            // Pass 1: Strict - same viewport, strict edges
+            // Pass 1: strict — same viewport, strict edges
             {
                 strictEdges: true,
                 allowOverlap: false,
@@ -2548,7 +2880,7 @@ body *:focus, body *:focus-visible {
                 distanceWeight: 1,
                 preferScrollGroup: true,
             },
-            // Pass 2: Relaxed - wider viewport, allow overlap
+            // Pass 2: relaxed — wider viewport, allow overlap
             {
                 strictEdges: false,
                 allowOverlap: true,
@@ -2558,7 +2890,7 @@ body *:focus, body *:focus-visible {
                 distanceWeight: 0.9,
                 preferScrollGroup: true,
             },
-            // Pass 3: Permissive - any element, no viewport requirement
+            // Pass 3: permissive — any element, no viewport requirement
             {
                 strictEdges: false,
                 allowOverlap: true,
@@ -2576,6 +2908,7 @@ body *:focus, body *:focus-visible {
                 return candidate;
             }
         }
+        log$b.debug(`no candidate for ${direction.name} after ${passes.length} passes`);
         const config = getConfig();
         if (config.wrapNavigation) {
             return findWrapCandidate(currentIndex, direction, state);
@@ -2583,25 +2916,18 @@ body *:focus, body *:focus-visible {
         return null;
     }
     /**
-     * Find wrap navigation candidate - returns element at opposite edge.
+     * Find wrap navigation candidate — returns element at the opposite edge.
      * Used when wrapNavigation is enabled and normal navigation hits a boundary.
      */
     function findWrapCandidate(currentIndex, direction, state) {
         const currentEntry = state.focusables[currentIndex];
-        if (!currentEntry || !currentEntry.element) {
+        if (!currentEntry || !currentEntry.element)
             return null;
-        }
-        // For wrap, we want the element at the opposite edge
-        // - down: wrap to topmost element
-        // - up: wrap to bottommost element
-        // - right: wrap to leftmost element
-        // - left: wrap to rightmost element
         updateEntryGeometry(currentEntry, state);
         const config = getConfig();
-        // If in grid mode, try to stay in same row/column
         const useGridAlignment = config.scoringMode === 'grid';
         const tolerance = config.gridAlignmentTolerance;
-        let candidates = [];
+        const candidates = [];
         for (let i = 0; i < state.focusables.length; i++) {
             if (i === currentIndex)
                 continue;
@@ -2611,37 +2937,33 @@ body *:focus, body *:focus-visible {
             updateEntryGeometry(entry, state);
             if (!entry.rect || entry.width <= 1 || entry.height <= 1)
                 continue;
-            // Check grid alignment for row/column wrap
             const gridAligned = useGridAlignment
                 ? isGridAligned(currentEntry, entry, direction, tolerance)
                 : false;
-            // Get position value based on direction (opposite edge)
+            // Position value chooses element at opposite edge:
+            //   down  → smallest top   (topmost)
+            //   up    → largest bottom (bottommost)
+            //   right → smallest left  (leftmost)
+            //   left  → largest right  (rightmost)
             let position;
             switch (direction.name) {
                 case 'down':
-                    position = entry.top; // Want smallest top (topmost)
+                    position = entry.top;
                     break;
                 case 'up':
-                    position = -entry.bottom; // Want largest bottom (bottommost)
+                    position = -entry.bottom;
                     break;
                 case 'right':
-                    position = entry.left; // Want smallest left (leftmost)
+                    position = entry.left;
                     break;
                 case 'left':
-                    position = -entry.right; // Want largest right (rightmost)
+                    position = -entry.right;
                     break;
             }
-            candidates.push({
-                index: i,
-                data: entry,
-                position,
-                gridAligned,
-            });
+            candidates.push({ index: i, data: entry, position, gridAligned });
         }
-        if (!candidates.length) {
+        if (!candidates.length)
             return null;
-        }
-        // Sort: grid-aligned first (if grid mode), then by position
         candidates.sort((a, b) => {
             if (useGridAlignment && a.gridAligned !== b.gridAligned) {
                 return a.gridAligned ? -1 : 1;
@@ -2663,7 +2985,7 @@ body *:focus, body *:focus-visible {
                 deltaY: 0,
                 gridAligned: best.gridAligned,
             },
-            passIndex: -1, // Wrap pass
+            passIndex: -1, // wrap pass marker
         };
     }
 
@@ -2688,7 +3010,7 @@ body *:focus, body *:focus-visible {
         // Build detail payload with all provided fields
         const detail = {
             dir: details.dir,
-            relatedTarget: details.relatedTarget || null
+            relatedTarget: details.relatedTarget || null,
         };
         // Forward focus-trap metadata for navnotarget events
         if (details.inTrap !== undefined) {
@@ -2706,154 +3028,9 @@ body *:focus, body *:focus-visible {
         const event = new CustomEvent(type, {
             bubbles: true,
             cancelable: true,
-            detail: detail
+            detail: detail,
         });
-        const result = target.dispatchEvent(event);
-        // Log for debugging
-        /*
-        console.log(`[SpatialNav] ${type} event dispatched:`, {
-            target: target.tagName + (target.id ? '#' + target.id : ''),
-            dir: details.dir,
-            inTrap: detail.inTrap,
-            escapeKey: detail.escapeKey,
-            defaultPrevented: !result
-        });
-        */
-        return result;
-    }
-
-    /**
-     * Tree-shakeable Logging System for Spatial Navigation
-     *
-     * Provides structured logging with:
-     * - Log levels (debug, info, warn, error)
-     * - Namespaced loggers for subsystems
-     * - Compile-time tree-shaking when DEBUG is false
-     * - Performance timing utilities
-     * - Conditional logging based on config
-     *
-     * Usage:
-     *   import { createLogger, DEBUG } from './logger';
-     *   const log = createLogger('Movement');
-     *   log.debug('Moving focus', { direction: 'down' });
-     *
-     * In production builds, set DEBUG = false to tree-shake all debug calls.
-     */
-    /**
-     * Debug mode flag.
-     * Set to false in production builds to eliminate debug logging.
-     * Build tools (Rollup, Webpack, etc.) will tree-shake dead code.
-     */
-    const DEBUG = /* @__PURE__ */ (() => {
-        // Check for explicit debug flag
-        if (typeof window !== 'undefined') {
-            const w = window;
-            if (w.SPATIAL_NAV_DEBUG !== undefined) {
-                return w.SPATIAL_NAV_DEBUG;
-            }
-        }
-        // Default: enabled in development, disabled in production
-        return typeof process !== 'undefined' &&
-            process.env?.NODE_ENV !== 'production';
-    })();
-    const LOG_LEVEL_ORDER = {
-        debug: 0,
-        info: 1,
-        warn: 2,
-        error: 3,
-        silent: 4
-    };
-    /**
-     * Current minimum log level.
-     */
-    let currentLevel = DEBUG ? 'debug' : 'warn';
-    /**
-     * Check if a log level should be output.
-     */
-    function shouldLog(level) {
-        return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[currentLevel];
-    }
-    /**
-     * Format a log message with namespace prefix.
-     */
-    function formatMessage(namespace, message) {
-        return `[SpatialNav:${namespace}] ${message}`;
-    }
-    /**
-     * Create a namespaced logger.
-     *
-     * @param namespace - Logger namespace (e.g., 'Movement', 'Scoring', 'DOM')
-     * @returns Logger instance
-     */
-    function createLogger(namespace) {
-        const timers = new Map();
-        return {
-            debug(message, data) {
-                if (!DEBUG || !shouldLog('debug'))
-                    return;
-                if (data !== undefined) {
-                    console.log(formatMessage(namespace, message), data);
-                }
-                else {
-                    console.log(formatMessage(namespace, message));
-                }
-            },
-            info(message, data) {
-                if (!shouldLog('info'))
-                    return;
-                if (data !== undefined) {
-                    console.info(formatMessage(namespace, message), data);
-                }
-                else {
-                    console.info(formatMessage(namespace, message));
-                }
-            },
-            warn(message, data) {
-                if (!shouldLog('warn'))
-                    return;
-                if (data !== undefined) {
-                    console.warn(formatMessage(namespace, message), data);
-                }
-                else {
-                    console.warn(formatMessage(namespace, message));
-                }
-            },
-            error(message, data) {
-                if (!shouldLog('error'))
-                    return;
-                if (data !== undefined) {
-                    console.error(formatMessage(namespace, message), data);
-                }
-                else {
-                    console.error(formatMessage(namespace, message));
-                }
-            },
-            time(label) {
-                if (!DEBUG)
-                    return;
-                timers.set(label, performance.now());
-            },
-            timeEnd(label) {
-                if (!DEBUG)
-                    return;
-                const start = timers.get(label);
-                if (start !== undefined) {
-                    const duration = performance.now() - start;
-                    timers.delete(label);
-                    this.debug(`${label}: ${duration.toFixed(2)}ms`);
-                }
-            },
-            group(label) {
-                if (!DEBUG || !shouldLog('debug'))
-                    return;
-                console.group(formatMessage(namespace, label));
-            },
-            groupEnd() {
-                if (!DEBUG || !shouldLog('debug'))
-                    return;
-                console.groupEnd();
-            }
-        };
+        return target.dispatchEvent(event);
     }
 
     /**
@@ -2873,14 +3050,17 @@ body *:focus, body *:focus-visible {
             return JSON.stringify({
                 name: value.name,
                 message: value.message,
-                stack: value.stack
+                stack: value.stack,
             });
         }
-        if (value && typeof value === 'object' && 'message' in value && typeof value.message === 'string') {
+        if (value &&
+            typeof value === 'object' &&
+            'message' in value &&
+            typeof value.message === 'string') {
             try {
                 return JSON.stringify({
                     ...value,
-                    message: value.message
+                    message: value.message,
                 });
             }
             catch {
@@ -2916,7 +3096,7 @@ body *:focus, body *:focus-visible {
      * Centralizes browser/chrome runtime messaging with consistent
      * Promise/callback handling and error formatting.
      */
-    const log$2 = createLogger('Bridge');
+    const log$a = createLogger('Bridge');
     /**
      * Get the runtime API (browser.runtime or chrome.runtime).
      * Returns null if no extension bridge is available.
@@ -2955,13 +3135,13 @@ body *:focus, body *:focus-visible {
         const runtime = getRuntimeApi();
         if (!runtime) {
             if (options.debug) {
-                log$2.debug('No extension bridge available');
+                log$a.debug('No extension bridge available');
             }
             return { success: false, error: 'No extension bridge available' };
         }
         try {
             if (options.debug) {
-                log$2.debug(`Sending message: ${safeJson(message)}`);
+                log$a.debug(`Sending message: ${safeJson(message)}`);
             }
             if (isFirefoxStyle()) {
                 // Firefox-style Promise API
@@ -2970,13 +3150,13 @@ body *:focus, body *:focus-visible {
                     try {
                         const response = await result;
                         if (options.debug) {
-                            log$2.debug(`Response (promise): ${safeJson(response)}`);
+                            log$a.debug(`Response (promise): ${safeJson(response)}`);
                         }
                         return { success: true, response };
                     }
                     catch (error) {
                         const errorMessage = formatBridgeError(error);
-                        log$2.error(`Bridge error (promise): ${errorMessage}`);
+                        log$a.error(`Bridge error (promise): ${errorMessage}`);
                         return { success: false, error: errorMessage };
                     }
                 }
@@ -2986,18 +3166,19 @@ body *:focus, body *:focus-visible {
                 // Chrome-style callback API
                 return new Promise((resolve) => {
                     runtime.sendMessage(message, (response) => {
+                        const typedResponse = response;
                         const runtimeWithError = runtime;
                         const lastError = runtimeWithError.lastError;
                         if (lastError) {
                             const errorMessage = formatBridgeError(lastError);
-                            log$2.error(`Bridge error (callback): ${errorMessage}`);
+                            log$a.error(`Bridge error (callback): ${errorMessage}`);
                             resolve({ success: false, error: errorMessage });
                         }
                         else {
                             if (options.debug) {
-                                log$2.debug(`Response (callback): ${safeJson(response)}`);
+                                log$a.debug(`Response (callback): ${safeJson(typedResponse)}`);
                             }
-                            resolve({ success: true, response });
+                            resolve({ success: true, response: typedResponse });
                         }
                     });
                 });
@@ -3005,7 +3186,7 @@ body *:focus, body *:focus-visible {
         }
         catch (error) {
             const errorMessage = formatBridgeError(error);
-            log$2.error(`Bridge exception: ${errorMessage}`);
+            log$a.error(`Bridge exception: ${errorMessage}`);
             return { success: false, error: errorMessage };
         }
     }
@@ -3047,7 +3228,7 @@ body *:focus, body *:focus-visible {
         return sendBridgeMessage({
             type: 'focusExit',
             direction,
-            inTrap
+            inTrap,
         });
     }
 
@@ -3057,6 +3238,9 @@ body *:focus, body *:focus-visible {
      * Handles directional movement, focus updates, and scroll alignment.
      * Features focus trap detection, accessibility announcements, and candidate caching.
      */
+    const log$9 = createLogger('Movement');
+    /** Position-hint expiry — older hints are stale for recovery. */
+    const POSITION_HINT_EXPIRY_MS = 2000;
     /**
      * Detect if element is within a focus trap (modal, dialog, overlay).
      *
@@ -3076,7 +3260,7 @@ body *:focus, body *:focus-visible {
             '[data-focus-trap]',
             '.MuiDialog-root', // Material UI
             '.ReactModal__Content', // react-modal
-            '.chakra-modal__content' // Chakra UI
+            '.chakra-modal__content', // Chakra UI
         ];
         for (const selector of trapSelectors) {
             try {
@@ -3090,7 +3274,7 @@ body *:focus, body *:focus-visible {
                         trap,
                         escapeKey,
                         closeButton,
-                        trapId: trap.id || trap.getAttribute('aria-labelledby') || 'dialog'
+                        trapId: trap.id || trap.getAttribute('aria-labelledby') || 'dialog',
                     };
                 }
             }
@@ -3121,7 +3305,7 @@ body *:focus, body *:focus-visible {
         schedulePrecompute(() => {
             const active = getActiveElement();
             // active may be Element, but state.focusableElements is HTMLElement[]
-            const currentIndex = active && (active instanceof HTMLElement) ? state.focusableElements.indexOf(active) : -1;
+            const currentIndex = active && active instanceof HTMLElement ? state.focusableElements.indexOf(active) : -1;
             if (currentIndex === -1) {
                 return;
             }
@@ -3134,12 +3318,13 @@ body *:focus, body *:focus-visible {
             for (const [name, dir] of Object.entries(dirMap)) {
                 targets[name] = findDirectionalCandidate(currentIndex, dir, state);
             }
-            // Casting because PrecomputedTargets interface in state.ts is strict with keys
+            // PrecomputedTargets interface in state.ts is strict with keys; the
+            // runtime targets shape always covers all four directions.
             state.precomputedTargets = targets;
             state.precomputedForIndex = currentIndex;
             state.precomputedTimestamp = Date.now();
             state.dirty = false;
-            // console.log('[SpatialNav] Pre-computed candidates for index', currentIndex);
+            log$9.debug(`pre-computed candidates for index ${currentIndex}`);
         });
     }
     /**
@@ -3158,8 +3343,10 @@ body *:focus, body *:focus-visible {
             !state.dirty &&
             cacheAge < cacheTimeout &&
             state.precomputedTargets;
-        if (cacheValid && state.precomputedTargets && state.precomputedTargets[direction.name]) {
-            // console.log('[SpatialNav] Using cached candidate for', direction.name);
+        if (cacheValid &&
+            state.precomputedTargets &&
+            state.precomputedTargets[direction.name]) {
+            log$9.debug(`using cached candidate for ${direction.name}`);
             return state.precomputedTargets[direction.name];
         }
         return findDirectionalCandidate(currentIndex, direction, state);
@@ -3179,7 +3366,7 @@ body *:focus, body *:focus-visible {
         }
         const config = state.config;
         const active = getActiveElement();
-        const currentIndex = active && (active instanceof HTMLElement) ? state.focusableElements.indexOf(active) : -1;
+        const currentIndex = active && active instanceof HTMLElement ? state.focusableElements.indexOf(active) : -1;
         if (currentIndex === -1) {
             return false;
         }
@@ -3196,7 +3383,7 @@ body *:focus, body *:focus-visible {
                 inTrap: !!trapInfo,
                 trapElement: trapInfo?.trap,
                 escapeElement: trapInfo?.closeButton ?? undefined,
-                escapeKey: trapInfo?.escapeKey
+                escapeKey: trapInfo?.escapeKey,
             });
             // Accessibility announcement for boundaries
             if (config.announceBoundaries) {
@@ -3207,20 +3394,15 @@ body *:focus, body *:focus-visible {
                     announce(`Edge of content. Cannot move ${direction.name}.`, state, 'polite');
                 }
             }
-            // At boundary: send message to native layer for focus exit
-            // console.log('[SpatialNav] At boundary - notifying native layer for focus exit:', direction.name);
-            // Post message to native layer (Relayed via Background Script)
-            // Use the centralized bridge utility for consistent Promise/callback handling
+            log$9.debug(`boundary reached, notifying native: ${direction.name}`);
             sendFocusExit(direction.name, !!trapInfo)
-                .then(result => {
-                if (!result.success && window.flutterSpatialNavDebug) {
-                    console.warn('[SpatialNav] focusExit relay error:', result.error);
+                .then((result) => {
+                if (!result.success) {
+                    log$9.debug('focusExit relay error', result.error);
                 }
             })
-                .catch(e => {
-                if (window.flutterSpatialNavDebug) {
-                    console.warn('[SpatialNav] focusExit error:', e);
-                }
+                .catch((e) => {
+                log$9.debug('focusExit error', e);
             });
             // Also dispatch custom event for web app listeners
             try {
@@ -3228,15 +3410,15 @@ body *:focus, body *:focus-visible {
                     detail: {
                         direction: direction.name,
                         inTrap: !!trapInfo,
-                        trapInfo: trapInfo
+                        trapInfo: trapInfo,
                     },
                     bubbles: true,
-                    cancelable: false
+                    cancelable: false,
                 });
                 document.dispatchEvent(exitEvent);
             }
             catch (e) {
-                console.warn('[SpatialNav] Failed to dispatch exit event:', e);
+                log$9.warn('failed to dispatch exit event', e);
             }
             // Hide overlay & previews while focus exits to native UI.
             // Without suppression, mutation/scroll observers can re-show the overlay.
@@ -3257,11 +3439,11 @@ body *:focus, body *:focus-visible {
         // Dispatch navbeforefocus event (cancelable)
         const canMove = dispatchNavEvent('navbeforefocus', target.data.element, {
             dir: direction.name,
-            relatedTarget: currentEntry.element
+            relatedTarget: currentEntry.element,
         });
         if (!canMove) {
-            // Web app called preventDefault() - cancel navigation
-            // console.log('[SpatialNav] Navigation cancelled by navbeforefocus handler');
+            // Web app called preventDefault() on navbeforefocus — cancel navigation.
+            log$9.debug('navigation cancelled by navbeforefocus handler');
             if (event) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -3277,7 +3459,7 @@ body *:focus, body *:focus-visible {
             toIndex: target.index,
             direction: direction.name,
             passIndex: typeof target.passIndex === 'number' ? target.passIndex : 0,
-            timestamp: Date.now()
+            timestamp: Date.now(),
         };
         simulatePointerEvents(currentEntry.element, target.data.element);
         const focusApplied = applyFocus(target.data.element, state);
@@ -3346,7 +3528,7 @@ body *:focus, body *:focus-visible {
             return getActiveElement();
         }
         const active = getActiveElement();
-        if (active && (active instanceof HTMLElement) && state.focusableElements.includes(active)) {
+        if (active && active instanceof HTMLElement && state.focusableElements.includes(active)) {
             return active;
         }
         const lastElement = state.lastFocusedElement;
@@ -3358,36 +3540,30 @@ body *:focus, body *:focus-visible {
                 return lastElement;
             }
         }
-        console.warn('[SpatialNav] Focus lost, attempting recovery');
-        // Attempt to recover using instrumentation data (element description match)
+        log$9.debug('focus lost, attempting recovery');
+        // 1. Recover via stored element description from the last overlay update.
         const lastOverlay = state.instrumentation?.lastOverlay;
         if (lastOverlay) {
             const recovered = state.focusables.find((entry) => {
                 return describeElement(entry.element) === lastOverlay;
             });
-            if (recovered?.element) {
-                if (applyFocus(recovered.element, state)) {
-                    // console.log('[SpatialNav] Recovered focus via lastOverlay:', lastOverlay);
-                    state.currentIndex = state.focusableElements.indexOf(recovered.element);
-                    return recovered.element;
-                }
+            if (recovered?.element && applyFocus(recovered.element, state)) {
+                log$9.debug(`recovered via lastOverlay: ${lastOverlay}`);
+                state.currentIndex = state.focusableElements.indexOf(recovered.element);
+                return recovered.element;
             }
         }
-        // NEW: Position-based recovery using stored geometric hint
-        // This prevents "popping to top" when virtual scroll recycles the focused element
+        // 2. Position-based recovery using a stored geometric hint.
+        // Prevents "popping to top" when virtual scroll recycles the focused element.
         const positionHint = state.lastFocusPosition;
-        const hintAgeMs = positionHint ? (Date.now() - positionHint.timestamp) : Infinity;
-        const HINT_EXPIRY_MS = 2000; // Position hints expire after 2 seconds
-        if (positionHint && hintAgeMs < HINT_EXPIRY_MS && state.focusables.length > 0) {
-            // console.log('[SpatialNav] Using position hint for recovery:',
-            //    positionHint.elementDesc, `(${hintAgeMs}ms old)`);
-            // Find element closest to the stored position
+        const hintAgeMs = positionHint ? Date.now() - positionHint.timestamp : Infinity;
+        if (positionHint && hintAgeMs < POSITION_HINT_EXPIRY_MS && state.focusables.length > 0) {
+            log$9.debug(`using position hint (${hintAgeMs}ms old)`);
             let bestEntry = null;
             let bestDistance = Infinity;
             for (const entry of state.focusables) {
                 if (!entry.rect)
                     continue;
-                // Calculate Euclidean distance from stored center point
                 const dx = entry.centerX - positionHint.centerX;
                 const dy = entry.centerY - positionHint.centerY;
                 const distance = Math.sqrt(dx * dx + dy * dy);
@@ -3396,36 +3572,23 @@ body *:focus, body *:focus-visible {
                     bestEntry = entry;
                 }
             }
-            if (bestEntry?.element) {
-                // console.log('[SpatialNav] Position-based recovery:',
-                //    describeElement(bestEntry.element),
-                //    `at distance ${bestDistance.toFixed(0)}px`);
-                if (applyFocus(bestEntry.element, state)) {
-                    state.currentIndex = state.focusableElements.indexOf(bestEntry.element);
-                    // Clear hint after successful recovery
-                    state.lastFocusPosition = null;
-                    return bestEntry.element;
-                }
+            if (bestEntry?.element && applyFocus(bestEntry.element, state)) {
+                log$9.debug(`position-based recovery: ${describeElement(bestEntry.element)} at ${bestDistance.toFixed(0)}px`);
+                state.currentIndex = state.focusableElements.indexOf(bestEntry.element);
+                state.lastFocusPosition = null;
+                return bestEntry.element;
             }
         }
-        // Strategy fallback: visible element or first
+        // 3. Strategy fallback: visible element or first.
         const strategy = state.config?.refocusStrategy ?? 'closest';
-        let fallbackEntry;
-        if (strategy === 'first') {
-            fallbackEntry = state.focusables[0];
-        }
-        else {
-            // 'closest' strategy: find first visible element
-            fallbackEntry = state.focusables.find((entry) => {
-                return entry.rect && isRectVisible(entry.rect, 0);
-            }) || state.focusables[0];
-        }
-        if (fallbackEntry?.element) {
-            // console.log('[SpatialNav] Fallback recovery:', describeElement(fallbackEntry.element));
-            if (applyFocus(fallbackEntry.element, state)) {
-                state.currentIndex = state.focusableElements.indexOf(fallbackEntry.element);
-                return fallbackEntry.element;
-            }
+        const fallbackEntry = strategy === 'first'
+            ? state.focusables[0]
+            : state.focusables.find((entry) => entry.rect && isRectVisible(entry.rect, 0)) ||
+                state.focusables[0];
+        if (fallbackEntry?.element && applyFocus(fallbackEntry.element, state)) {
+            log$9.debug(`fallback recovery: ${describeElement(fallbackEntry.element)}`);
+            state.currentIndex = state.focusableElements.indexOf(fallbackEntry.element);
+            return fallbackEntry.element;
         }
         return null;
     }
@@ -3439,7 +3602,9 @@ body *:focus, body *:focus-visible {
             // Handle IFrames separately
             if (tagName === 'iframe' && state.config?.iframeSupport?.enabled) {
                 const iframeEl = htmlEl;
-                if (state.config.iframeSupport.focusMethod === 'contentWindow' && iframeEl.contentWindow && typeof iframeEl.contentWindow.focus === 'function') {
+                if (state.config.iframeSupport.focusMethod === 'contentWindow' &&
+                    iframeEl.contentWindow &&
+                    typeof iframeEl.contentWindow.focus === 'function') {
                     iframeEl.contentWindow.focus();
                     state.lastFocusedElement = htmlEl;
                     return element;
@@ -3467,9 +3632,7 @@ body *:focus, body *:focus-visible {
             if (document.activeElement !== htmlEl) {
                 // Attempt to make it focusable if it's not
                 if (!htmlEl.hasAttribute('tabindex')) {
-                    if (window.flutterSpatialNavDebug) {
-                        console.log(`[SpatialNav] Element not accepting focus, setting tabindex="-1": ${describeElement(htmlEl)}`);
-                    }
+                    log$9.debug(`element not accepting focus, setting tabindex="-1": ${describeElement(htmlEl)}`);
                     htmlEl.setAttribute('tabindex', '-1');
                     focusWithFallback();
                 }
@@ -3478,17 +3641,13 @@ body *:focus, body *:focus-visible {
                 state.lastFocusedElement = htmlEl;
                 return element;
             }
-            else {
-                if (window.flutterSpatialNavDebug) {
-                    console.warn(`[SpatialNav] Focus call failed to change activeElement for: ${describeElement(htmlEl)}. Current active: ${describeElement(document.activeElement)}`);
-                }
-            }
+            log$9.debug(`focus call failed to change activeElement for ${describeElement(htmlEl)}; current=${describeElement(document.activeElement)}`);
         }
         catch (e) {
-            console.warn('[SpatialNav] Error during applyFocus:', e);
+            log$9.warn('error during applyFocus', e);
         }
         // Fallback: update state anyway if we're sure this is what we want?
-        // Usually it's better to NOT update state if focus didn't move, 
+        // Usually it's better to NOT update state if focus didn't move,
         // but some apps manage focus manually on click/keydown.
         // For now, only update if it's actually active.
         if (document.activeElement === htmlEl) {
@@ -3512,7 +3671,7 @@ body *:focus, body *:focus-visible {
         const maxY = Math.max(0, (window?.innerHeight ?? 0) - 1);
         return {
             x: clamp(x, 0, maxX),
-            y: clamp(y, 0, maxY)
+            y: clamp(y, 0, maxY),
         };
     }
     function isHitWithinTarget(hit, target) {
@@ -3539,7 +3698,7 @@ body *:focus, body *:focus-visible {
             { label: 'top-center', x: rect.left + rect.width / 2, y: rect.top + inset },
             { label: 'bottom-center', x: rect.left + rect.width / 2, y: rect.bottom - inset },
             { label: 'center-left', x: rect.left + inset, y: rect.top + rect.height / 2 },
-            { label: 'center-right', x: rect.right - inset, y: rect.top + rect.height / 2 }
+            { label: 'center-right', x: rect.right - inset, y: rect.top + rect.height / 2 },
         ];
         for (const point of points) {
             const clamped = clampToViewport(point.x, point.y);
@@ -3549,7 +3708,12 @@ body *:focus, body *:focus-visible {
             }
         }
         const fallback = clampToViewport(points[0].x, points[0].y);
-        return { x: fallback.x, y: fallback.y, label: 'center', hit: document.elementFromPoint(fallback.x, fallback.y) };
+        return {
+            x: fallback.x,
+            y: fallback.y,
+            label: 'center',
+            hit: document.elementFromPoint(fallback.x, fallback.y),
+        };
     }
 
     /**
@@ -3558,7 +3722,7 @@ body *:focus, body *:focus-visible {
      * These utilities are extracted from handlers.ts to reduce coupling
      * and prevent circular dependencies with observer.ts.
      */
-    const log$1 = createLogger('Focus');
+    const log$8 = createLogger('Focus');
     /**
      * Schedule an overlay update with requestAnimationFrame.
      * Respects overlay suppression state for focus-exit scenarios.
@@ -3593,7 +3757,9 @@ body *:focus, body *:focus-visible {
             if (state.instrumentation) {
                 state.instrumentation.lastActive = describeElement(target) || 'EMPTY_DESC';
                 state.instrumentation.lastOverlay = describeElement(target);
-                state.instrumentation.activeIndex = state.focusableElements ? state.focusableElements.indexOf(target) : -1;
+                state.instrumentation.activeIndex = state.focusableElements
+                    ? state.focusableElements.indexOf(target)
+                    : -1;
                 state.instrumentation.lastUpdate = Date.now();
             }
             if (target && target.nodeType === 1) {
@@ -3628,20 +3794,26 @@ body *:focus, body *:focus-visible {
             top: entry.top,
             left: entry.left,
             elementDesc: describeElement(active),
-            timestamp: Date.now()
+            timestamp: Date.now(),
         };
         if (DEBUG) {
-            log$1.debug(`Stored position hint: ${state.lastFocusPosition.elementDesc} at (${entry.centerX.toFixed(0)}, ${entry.centerY.toFixed(0)})`);
+            log$8.debug(`Stored position hint: ${state.lastFocusPosition.elementDesc} at (${entry.centerX.toFixed(0)}, ${entry.centerY.toFixed(0)})`);
         }
     }
 
     /**
      * Menu-toggle handling helpers for Spatial Navigation.
      *
-     * Some sites use hover-driven navigation menus that open on pointer enter and do
-     * not reliably close on click/tap. For D-pad/Enter interactions we treat
-     * aria-haspopup/aria-expanded toggles as true toggles: second press closes.
+     * Some sites use hover-driven navigation menus that open on pointer enter and
+     * do not reliably close on click/tap. For D-pad/Enter interactions we treat
+     * `aria-haspopup`/`aria-expanded` toggles as true toggles: a second press
+     * closes them. We try a hover-exit first (cheap, doesn't move focus); if the
+     * menu is still open we fall back to a synthetic "outside click".
      */
+    const log$7 = createLogger('MenuToggle');
+    const NAV_ROOT_DEPTH_LIMIT = 12;
+    const HOVER_EXIT_INSET_PX = 8;
+    const FALLBACK_FOCUS_RESTORE_DELAY_MS = 120;
     function isMenuToggleElement(el) {
         const ariaHasPopup = safeGetAttr(el, 'aria-haspopup');
         const ariaExpanded = safeGetAttr(el, 'aria-expanded');
@@ -3658,7 +3830,7 @@ body *:focus, body *:focus-visible {
                 return false;
         }
         catch {
-            // If we can't read styles, fall back to geometry checks.
+            // Fall through to geometry checks below.
         }
         try {
             const rect = el.getBoundingClientRect();
@@ -3688,19 +3860,16 @@ body *:focus, body *:focus-visible {
     function findNavigationRoot(start) {
         let current = start;
         let depth = 0;
-        while (current && depth < 12) {
-            const tagName = current.tagName?.toLowerCase?.();
-            if (tagName === 'nav' || tagName === 'header') {
+        while (current && depth < NAV_ROOT_DEPTH_LIMIT) {
+            const tagName = current.tagName?.toLowerCase();
+            if (tagName === 'nav' || tagName === 'header')
                 return current;
-            }
             const role = safeGetAttr(current, 'role');
-            if (role === 'navigation') {
+            if (role === 'navigation')
                 return current;
-            }
             const id = safeGetAttr(current, 'id') || '';
             if (id && /nav/i.test(id) && id.length <= 48) {
                 try {
-                    // Heuristic: treat as navigation only if it actually contains links/menuitems.
                     if (current.querySelector?.('a, [role="menuitem"], [role="link"]')) {
                         return current;
                     }
@@ -3728,8 +3897,7 @@ body *:focus, body *:focus-visible {
         // Common wrappers for drop-down menus.
         const container = toggle.closest?.('.folder-parent, li, nav, header, [role="menuitem"]');
         if (container) {
-            const directChildren = Array.from(container.children);
-            for (const child of directChildren) {
+            for (const child of Array.from(container.children)) {
                 if (child === toggle)
                     continue;
                 if (child.nodeType === 1 && looksLikeSubmenu(child)) {
@@ -3778,7 +3946,7 @@ body *:focus, body *:focus-visible {
         if (!el)
             return false;
         try {
-            const tagName = el.tagName?.toLowerCase?.();
+            const tagName = el.tagName?.toLowerCase();
             if (!tagName)
                 return false;
             if (tagName === 'a')
@@ -3798,22 +3966,46 @@ body *:focus, body *:focus-visible {
         }
     }
     function pickOutsidePoint(options) {
-        const inset = 8;
+        const inset = HOVER_EXIT_INSET_PX;
         const { toggleRect, submenuRect, exclusions } = options;
         const points = [];
         if (submenuRect) {
-            points.push({ label: 'submenu-below', x: submenuRect.left + submenuRect.width / 2, y: submenuRect.bottom + inset });
+            points.push({
+                label: 'submenu-below',
+                x: submenuRect.left + submenuRect.width / 2,
+                y: submenuRect.bottom + inset,
+            });
             points.push({ label: 'submenu-right', x: submenuRect.right + inset, y: submenuRect.top + inset });
             points.push({ label: 'submenu-left', x: submenuRect.left - inset, y: submenuRect.top + inset });
-            points.push({ label: 'submenu-above', x: submenuRect.left + submenuRect.width / 2, y: submenuRect.top - inset });
+            points.push({
+                label: 'submenu-above',
+                x: submenuRect.left + submenuRect.width / 2,
+                y: submenuRect.top - inset,
+            });
         }
-        points.push({ label: 'toggle-below', x: toggleRect.left + toggleRect.width / 2, y: toggleRect.bottom + inset });
-        points.push({ label: 'toggle-above', x: toggleRect.left + toggleRect.width / 2, y: toggleRect.top - inset });
-        points.push({ label: 'viewport-center', x: (window?.innerWidth ?? 0) / 2, y: (window?.innerHeight ?? 0) / 2 });
+        points.push({
+            label: 'toggle-below',
+            x: toggleRect.left + toggleRect.width / 2,
+            y: toggleRect.bottom + inset,
+        });
+        points.push({
+            label: 'toggle-above',
+            x: toggleRect.left + toggleRect.width / 2,
+            y: toggleRect.top - inset,
+        });
+        points.push({
+            label: 'viewport-center',
+            x: (window?.innerWidth ?? 0) / 2,
+            y: (window?.innerHeight ?? 0) / 2,
+        });
         points.push({ label: 'viewport-top-left', x: inset, y: inset });
         points.push({ label: 'viewport-top-right', x: (window?.innerWidth ?? 0) - inset, y: inset });
         points.push({ label: 'viewport-bottom-left', x: inset, y: (window?.innerHeight ?? 0) - inset });
-        points.push({ label: 'viewport-bottom-right', x: (window?.innerWidth ?? 0) - inset, y: (window?.innerHeight ?? 0) - inset });
+        points.push({
+            label: 'viewport-bottom-right',
+            x: (window?.innerWidth ?? 0) - inset,
+            y: (window?.innerHeight ?? 0) - inset,
+        });
         let fallback = null;
         for (const point of points) {
             const clamped = clampToViewport(point.x, point.y);
@@ -3830,7 +4022,12 @@ body *:focus, body *:focus-visible {
         if (fallback)
             return fallback;
         const center = clampToViewport(toggleRect.left + toggleRect.width / 2, toggleRect.top + toggleRect.height / 2);
-        return { x: center.x, y: center.y, label: 'toggle-center', hit: document.elementFromPoint(center.x, center.y) };
+        return {
+            x: center.x,
+            y: center.y,
+            label: 'toggle-center',
+            hit: document.elementFromPoint(center.x, center.y),
+        };
     }
     function dispatchHoverExit(target, clientX, clientY) {
         const commonOptions = {
@@ -3840,20 +4037,19 @@ body *:focus, body *:focus-visible {
             clientX,
             clientY,
             buttons: 0,
-            detail: 0
+            detail: 0,
         };
-        // Dispatch both Pointer and Mouse exit events for better compatibility.
-        if (typeof window.PointerEvent === 'function') {
+        if (typeof PointerEvent === 'function') {
             const pointerExit = {
                 ...commonOptions,
                 pointerId: 1,
                 pointerType: 'mouse',
                 isPrimary: true,
                 button: -1,
-                pressure: 0
+                pressure: 0,
             };
-            target.dispatchEvent(new window.PointerEvent('pointerout', pointerExit));
-            target.dispatchEvent(new window.PointerEvent('pointerleave', pointerExit));
+            target.dispatchEvent(new PointerEvent('pointerout', pointerExit));
+            target.dispatchEvent(new PointerEvent('pointerleave', pointerExit));
         }
         target.dispatchEvent(new MouseEvent('mouseout', commonOptions));
         target.dispatchEvent(new MouseEvent('mouseleave', commonOptions));
@@ -3872,38 +4068,26 @@ body *:focus, body *:focus-visible {
         const submenuRect = menuState.submenu ? menuState.submenu.getBoundingClientRect() : null;
         const toggleRect = actionElement.getBoundingClientRect();
         const outside = pickOutsidePoint({ toggleRect, submenuRect, exclusions });
-        if (window.flutterSpatialNavDebug) {
-            console.log(`[SpatialNav DEBUG] Menu toggle appears OPEN (${menuState.reason}) - closing via hover-exit + outside click ${safeJson({
+        log$7.debug(`menu toggle OPEN (${menuState.reason}) — closing via hover-exit + outside click`, {
             toggle: describeElement(actionElement),
             ariaExpanded: menuState.ariaExpanded,
             submenu: menuState.submenu ? describeElement(menuState.submenu) : null,
             navRoot: navRoot ? describeElement(navRoot) : null,
-            outside: {
-                label: outside.label,
-                x: outside.x,
-                y: outside.y,
-                hit: describeElement(outside.hit)
-            }
-        })}`);
-        }
-        // 1) Try to close hover-driven menus (JS handlers attached to mouseleave).
+            outside: { label: outside.label, x: outside.x, y: outside.y, hit: describeElement(outside.hit) },
+        });
+        // 1. Try to close hover-driven menus first (no focus disruption).
         dispatchHoverExit(actionElement, outside.x, outside.y);
         if (menuState.submenu) {
             dispatchHoverExit(menuState.submenu, outside.x, outside.y);
         }
-        // 2) If hover-exit already closed the menu, do NOT click outside.
-        // Clicking outside will often steal focus from the toggle (unfocus), and on some
-        // sites may accidentally trigger navigation if the point lands on chrome/nav.
+        // 2. If hover-exit closed the menu, skip the outside click entirely.
+        //    Outside clicks can steal focus or accidentally trigger nav chrome.
         const afterHover = detectMenuToggleState(actionElement);
         if (!afterHover.isOpen) {
-            if (window.flutterSpatialNavDebug) {
-                console.log(`[SpatialNav DEBUG] Menu closed via hover-exit (${menuState.reason}) - skipping outside click`);
-            }
+            log$7.debug(`menu closed via hover-exit (${menuState.reason}) — skipping outside click`);
             state.dirty = true;
             try {
-                if (typeof actionElement.focus === 'function') {
-                    actionElement.focus();
-                }
+                actionElement.focus?.();
                 scheduleOverlayUpdate(actionElement, state);
             }
             catch {
@@ -3913,8 +4097,8 @@ body *:focus, body *:focus-visible {
             event.stopPropagation();
             return true;
         }
-        // 3) Still open: click outside as a fallback. Run in a later task to avoid
-        // re-entrancy issues and to allow any menu close transitions to settle.
+        // 3. Still open — synthetic outside click as fallback. Defer to a later
+        //    task to let any close transitions settle and avoid re-entrancy.
         setTimeout(() => {
             const currentDomHandlerId = document.documentElement.getAttribute('data-spatnav-handler-id');
             if (String(closeHandlerId) !== currentDomHandlerId)
@@ -3924,30 +4108,34 @@ body *:focus, body *:focus-visible {
                 return;
             const toggleRectNow = actionElement.getBoundingClientRect();
             const submenuRectNow = stillOpen.submenu ? stillOpen.submenu.getBoundingClientRect() : submenuRect;
-            const outsideNow = pickOutsidePoint({ toggleRect: toggleRectNow, submenuRect: submenuRectNow, exclusions });
-            if (window.flutterSpatialNavDebug) {
-                console.log(`[SpatialNav DEBUG] Menu still open - applying outside-click fallback ${safeJson({
+            const outsideNow = pickOutsidePoint({
+                toggleRect: toggleRectNow,
+                submenuRect: submenuRectNow,
+                exclusions,
+            });
+            log$7.debug('menu still open — outside-click fallback', {
                 toggle: describeElement(actionElement),
                 outside: {
                     label: outsideNow.label,
                     x: outsideNow.x,
                     y: outsideNow.y,
                     hit: describeElement(outsideNow.hit),
-                }
-            })}`);
-            }
-            // Prefer native outside click when available for trusted closing.
-            if (canRequestNativeClick && runtimeApi && typeof runtimeApi.sendMessage === 'function') {
+                },
+            });
+            const runtime = runtimeApi;
+            // Native injection produces a Trusted MotionEvent — many sites only
+            // close menus on real input. Falls back to JS click otherwise.
+            if (canRequestNativeClick && runtime && typeof runtime.sendMessage === 'function') {
                 const dpr = window.devicePixelRatio || 1;
                 const physicalX = outsideNow.x * dpr;
                 const physicalY = outsideNow.y * dpr;
                 try {
-                    console.log(`[SpatialNav] Closing menu toggle via NATIVE outside click ${safeJson({
-                    css: { x: outsideNow.x, y: outsideNow.y, point: outsideNow.label },
-                    dpr,
-                    final: { x: physicalX, y: physicalY }
-                })}`);
-                    runtimeApi.sendMessage({
+                    log$7.debug('closing menu toggle via NATIVE outside click', {
+                        css: { x: outsideNow.x, y: outsideNow.y, point: outsideNow.label },
+                        dpr,
+                        final: { x: physicalX, y: physicalY },
+                    });
+                    runtime.sendMessage({
                         type: 'simulateClick',
                         x: physicalX,
                         y: physicalY,
@@ -3957,19 +4145,35 @@ body *:focus, body *:focus-visible {
                             point: outsideNow.label,
                             hit: describeElement(outsideNow.hit),
                             context: 'menuToggleClose',
-                        }
+                        },
                     });
                 }
                 catch (e) {
-                    console.warn('[SpatialNav] Native outside-click failed, using JS fallback', e);
+                    log$7.warn('native outside-click failed, using JS fallback', e);
                 }
             }
             else {
                 const hit = outsideNow.hit;
                 try {
                     if (hit && typeof hit.dispatchEvent === 'function') {
-                        hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, clientX: outsideNow.x, clientY: outsideNow.y, buttons: 1, detail: 1 }));
-                        hit.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, clientX: outsideNow.x, clientY: outsideNow.y, buttons: 1, detail: 1 }));
+                        hit.dispatchEvent(new MouseEvent('mousedown', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: outsideNow.x,
+                            clientY: outsideNow.y,
+                            buttons: 1,
+                            detail: 1,
+                        }));
+                        hit.dispatchEvent(new MouseEvent('mouseup', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: outsideNow.x,
+                            clientY: outsideNow.y,
+                            buttons: 1,
+                            detail: 1,
+                        }));
                     }
                     if (hit && typeof hit.click === 'function') {
                         hit.click();
@@ -3982,22 +4186,20 @@ body *:focus, body *:focus-visible {
                     // ignore
                 }
             }
-            // Restore focus to the toggle after the outside-click closes the menu.
-            // Native injection will typically move focus to the clicked element.
+            // Restore focus to the toggle after the outside-click has propagated.
+            // Native injection typically moves focus to the clicked element.
             setTimeout(() => {
                 const currentId2 = document.documentElement.getAttribute('data-spatnav-handler-id');
                 if (String(closeHandlerId) !== currentId2)
                     return;
                 try {
-                    if (typeof actionElement.focus === 'function') {
-                        actionElement.focus();
-                    }
+                    actionElement.focus?.();
                     scheduleOverlayUpdate(actionElement, state);
                 }
                 catch {
                     // ignore
                 }
-            }, 120);
+            }, FALLBACK_FOCUS_RESTORE_DELAY_MS);
         }, 0);
         state.dirty = true;
         event.preventDefault();
@@ -4006,432 +4208,129 @@ body *:focus, body *:focus-visible {
     }
 
     /**
-     * Event handlers for Spatial Navigation System
+     * Event handlers for Spatial Navigation.
      *
-     * Manages keyboard event listeners and orchestrates navigation.
+     * Manages keyboard event listeners and orchestrates navigation. Two
+     * GeckoView-specific defenses live here that are easy to break in refactors:
+     *
+     * 1. **Stale-handler guard via DOM attribute.** Content scripts can be re-injected
+     *    on every navigation. Each injection runs in an isolated world with its own
+     *    `window` global, so a window-keyed flag can't see prior installs. The DOM,
+     *    however, is shared. We stamp `data-spatnav-handler-id` on `documentElement`
+     *    on each `attachHandlers()` and check it inside every keydown — older
+     *    handlers see a mismatch and short-circuit.
+     *
+     * 2. **Atomic event lock per keypress.** Synthetic `KeyboardEvent`s in GeckoView
+     *    can have a non-unique or constant `timeStamp` (e.g. 0). To prevent
+     *    duplicate handling across overlapping handlers/isolated worlds we set a
+     *    DOM attribute lock keyed by `type:key:timeStamp` before any other work,
+     *    and clear it at the end of the current task (microtask if available).
+     *    The lock release is critical — without it, subsequent presses get blocked.
      */
-    // Create logger for handlers
-    const log = createLogger('Handlers');
+    const log$6 = createLogger('Handlers');
+    // --- Constants -------------------------------------------------------------
+    /** Discard rapid same-key repeats fired within this many milliseconds. */
+    const RAPID_REPEAT_THRESHOLD_MS = 50;
+    /** Throttle for refreshing the focusable cache during keydown bursts. */
+    const REFRESH_THROTTLE_MS = 150;
+    /** Click-animation pulse duration. */
+    const CLICK_ANIMATION_MS = 150;
+    /** DOM attributes used for cross-world coordination. */
+    const HANDLER_ID_ATTR = 'data-spatnav-handler-id';
+    const HANDLER_COUNTER_ATTR = 'data-spatnav-handler-counter';
+    const EVENT_LOCK_ATTR = 'data-spatnav-event-lock';
+    // Tags that should receive a Trusted-event native click rather than a JS .click().
+    // These categories often gate behavior (lightboxes, players, popovers) on
+    // `event.isTrusted` being true, which only native MotionEvent injection provides.
+    const NATIVE_CLICK_TAGS = new Set(['div', 'span', 'button', 'video', 'img']);
+    // Native `<input>` types that don't carry editable text — Enter/Space should still
+    // activate them rather than insert a newline/space.
+    const NON_EDITABLE_INPUT_TYPES = new Set(['button', 'submit', 'reset', 'checkbox', 'radio', 'image', 'file']);
+    // =============================================================================
+    // Keydown handler
+    // =============================================================================
     /**
      * Handle key down events for spatial navigation.
-     *
-     * @param event - The keydown event
-     * @param state - Global state object
      */
     function handleKeyDown(event, state) {
-        if (!event) {
+        if (!event)
             return;
-        }
-        // CRITICAL: Check if this handler is the current active one before claiming the event.
-        // Old handlers from previous script injections must be ignored.
-        // Use DOM attribute (shared across isolated worlds) instead of window property (isolated).
+        // 1. Stale-handler guard — see file header.
         const myHandlerId = state.handlerId;
-        const currentDomHandlerId = document.documentElement.getAttribute('data-spatnav-handler-id');
+        const currentDomHandlerId = document.documentElement.getAttribute(HANDLER_ID_ATTR);
         if (String(myHandlerId) !== currentDomHandlerId) {
-            if (window.flutterSpatialNavDebug) {
-                console.log(`[SpatialNav DEBUG] ⚠️ STALE HANDLER BLOCKED (handleKeyDown): myId=${myHandlerId}, currentId=${currentDomHandlerId}`);
-            }
+            log$6.debug(`stale handler blocked: my=${myHandlerId} current=${currentDomHandlerId}`);
             return;
         }
-        // CRITICAL: Atomic event lock using DOM attribute.
-        // This MUST be the first thing we do (after the stale-handler check) to prevent race
-        // conditions between multiple injected handlers/isolated worlds.
-        //
-        // NOTE: In GeckoView, synthetic KeyboardEvents can have a non-unique or constant `timeStamp`
-        // (e.g. 0). If the lock is not released after dispatch, subsequent presses can be blocked.
-        // We therefore clear the lock at the end of the current task.
-        const lockAttr = 'data-spatnav-event-lock';
-        const timeStamp = typeof event.timeStamp === 'number' && Number.isFinite(event.timeStamp)
-            ? event.timeStamp
-            : 0;
+        // 2. Atomic event lock — see file header.
+        const timeStamp = Number.isFinite(event.timeStamp) ? event.timeStamp : 0;
         const eventLockKey = `${event.type || 'keydown'}:${event.key || ''}:${timeStamp.toFixed(3)}`;
-        const currentLock = document.documentElement.getAttribute(lockAttr);
+        const currentLock = document.documentElement.getAttribute(EVENT_LOCK_ATTR);
         if (currentLock === eventLockKey) {
-            // Another handler already claimed this event - exit immediately
-            if (window.flutterSpatialNavDebug) {
-                console.log(`[SpatialNav DEBUG] ⚠️ EVENT LOCK HIT: ${eventLockKey}`);
-            }
+            log$6.debug(`event lock hit: ${eventLockKey}`);
             return;
         }
-        // ATOMIC: Set lock immediately before any other processing
-        // This prevents other handlers from processing the same event
-        document.documentElement.setAttribute(lockAttr, eventLockKey);
+        document.documentElement.setAttribute(EVENT_LOCK_ATTR, eventLockKey);
         const clearLock = () => {
             try {
-                const lockValue = document.documentElement.getAttribute(lockAttr);
+                const lockValue = document.documentElement.getAttribute(EVENT_LOCK_ATTR);
                 if (lockValue !== eventLockKey)
                     return;
-                const root = document.documentElement;
-                if (typeof root.removeAttribute === 'function') {
-                    root.removeAttribute(lockAttr);
-                }
-                else {
-                    document.documentElement.setAttribute(lockAttr, '');
-                }
+                document.documentElement.removeAttribute(EVENT_LOCK_ATTR);
             }
             catch {
-                // ignore
+                // Ignore — DOM may be detached during unload.
             }
         };
-        try {
-            if (typeof queueMicrotask === 'function') {
-                queueMicrotask(clearLock);
-            }
-            else {
-                setTimeout(clearLock, 0);
-            }
+        if (typeof queueMicrotask === 'function') {
+            queueMicrotask(clearLock);
         }
-        catch {
+        else {
             setTimeout(clearLock, 0);
         }
-        // CRITICAL: Stop ALL other handlers from receiving this event
-        // This prevents old handlers (from previous injections) that don't have
-        // the event lock check from processing the same event
+        // 3. Stop other handlers (older handlers without the lock check) from running.
         event.stopImmediatePropagation();
-        // DEBUG: Track every keydown call with event-level detection
+        // 4. Track keydown stats for the debug API.
         const debugNow = Date.now();
         window.__SPATIAL_NAV_KEYDOWN_COUNT__ = (window.__SPATIAL_NAV_KEYDOWN_COUNT__ || 0) + 1;
         const callCount = window.__SPATIAL_NAV_KEYDOWN_COUNT__;
         const lastTime = window.__SPATIAL_NAV_LAST_KEY_TIME__ || 0;
         const lastKey = window.__SPATIAL_NAV_LAST_KEY__ || '';
         const timeSinceLast = debugNow - lastTime;
-        const handlerId = myHandlerId; // Use state.handlerId (already retrieved above)
-        if (window.flutterSpatialNavDebug) {
-            log.debug(`========== KEYDOWN #${callCount} ==========`);
-            log.debug(`Handler ID: ${handlerId}, Event lock: ${eventLockKey}`);
-            log.debug(`Key: "${event.key}" | Last: "${lastKey}" | TimeSince: ${timeSinceLast}ms`);
-        }
+        log$6.debug(`keydown #${callCount} key="${event.key}" handler=${myHandlerId} since=${timeSinceLast}ms`);
         window.__SPATIAL_NAV_LAST_KEY_TIME__ = debugNow;
         window.__SPATIAL_NAV_LAST_KEY__ = event.key;
-        // DUPLICATE DETECTION: If same key within 50ms, likely duplicate event dispatch
-        if (event.key === lastKey && timeSinceLast < 50 && timeSinceLast > 0) {
-            if (window.flutterSpatialNavDebug) {
-                log.debug(`⚠️ RAPID REPEAT! Same key "${event.key}" within ${timeSinceLast}ms`);
-                log.debug(`Blocking rapid repeat and preventing default`);
-            }
+        // 5. Drop rapid same-key repeats — likely synthetic-event duplicates.
+        if (event.key === lastKey && timeSinceLast < RAPID_REPEAT_THRESHOLD_MS && timeSinceLast > 0) {
+            log$6.debug(`rapid repeat blocked: "${event.key}" within ${timeSinceLast}ms`);
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
             return;
         }
-        // Handle ENTER and SPACE keys to trigger clicks on focused elements
+        // 6. ENTER and SPACE — activate the focused element.
         if (event.key === 'Enter' || event.key === ' ') {
-            const activeElement = getActiveElement();
-            // FIX: Don't intercept Enter/Space on editable elements (inputs, textareas, contenteditable)
-            // This preserves native behavior for form submission, newlines, etc.
-            if (activeElement) {
-                const tagName = activeElement.tagName.toLowerCase();
-                const htmlElement = activeElement;
-                const inputElement = activeElement;
-                const isEditable = htmlElement.isContentEditable ||
-                    tagName === 'textarea' ||
-                    (tagName === 'input' && !['button', 'submit', 'reset', 'checkbox', 'radio', 'image', 'file'].includes(inputElement.type || ''));
-                if (isEditable) {
-                    return;
-                }
-                const href = safeGetAttr(activeElement, 'href');
-                const role = safeGetAttr(activeElement, 'role');
-                const classes = safeGetAttr(activeElement, 'class') || '';
-                const ariaHasPopup = safeGetAttr(activeElement, 'aria-haspopup');
-                const ariaExpanded = safeGetAttr(activeElement, 'aria-expanded');
-                console.log(`[SpatialNav] ${event.key === ' ' ? 'SPACE' : 'ENTER'} pressed on: ${describeElement(activeElement)} ${safeJson({
-                tagName,
-                role,
-                hasHref: !!href,
-                href: href?.substring(0, 50),
-                classes: classes.substring(0, 50),
-                ariaHasPopup,
-                ariaExpanded
-            })}`);
-                // Prefer clicking the nearest menu-toggle element, if present.
-                // Many nav menus attach handlers to the toggle element, not its child spans.
-                let actionElement = activeElement;
-                try {
-                    const menuToggle = activeElement.closest?.('[aria-haspopup], [aria-expanded]');
-                    if (menuToggle) {
-                        actionElement = menuToggle;
-                    }
-                }
-                catch {
-                    // ignore
-                }
-                // STRATEGY: Native Touch Injection for "Trusted" events
-                // Some frameworks (YouTube, SquareSpace) require trusted touch events
-                // for certain actions (opening lightboxes, play/pause).
-                // We use native injection for elements that need trusted events:
-                // - <a> without href (JS-handled links)
-                // - <div>, <span>, <button> (custom interactive elements)
-                // - role="button" (ARIA buttons)
-                // - <video>, <img> (media elements - thumbnails, players)
-                const actionTag = actionElement.tagName.toLowerCase();
-                const actionRole = safeGetAttr(actionElement, 'role');
-                const isMenuToggle = isMenuToggleElement(actionElement);
-                const wantsNativeClick = ((actionTag === 'a' && !actionElement.hasAttribute('href')) ||
-                    (actionTag === 'div' || actionTag === 'span' || actionTag === 'button') ||
-                    (actionRole === 'button') ||
-                    (actionTag === 'video') ||
-                    (actionTag === 'img'));
-                // Only attempt native injection if the WebExtension bridge exists.
-                const runtimeApi = globalThis.browser?.runtime ?? globalThis.chrome?.runtime;
-                const canRequestNativeClick = !!runtimeApi &&
-                    typeof runtimeApi.sendMessage === 'function';
-                // Menu toggles should behave like toggles: second press closes.
-                if (isMenuToggle) {
-                    const didClose = tryCloseOpenMenuToggle({
-                        actionElement,
-                        state,
-                        event,
-                        handlerId: myHandlerId,
-                        runtimeApi,
-                        canRequestNativeClick
-                    });
-                    if (didClose) {
-                        return;
-                    }
-                }
-                const useNativeClick = canRequestNativeClick && wantsNativeClick;
-                console.log(`[SpatialNav] Click strategy: ${useNativeClick ? 'NATIVE' : 'JS .click()'} ${safeJson({
-                tagName,
-                role,
-                actionTag,
-                actionRole,
-                isMenuToggle,
-                runtimeMode: state.runtime?.mode,
-                canRequestNativeClick,
-                hasHref: actionElement.hasAttribute('href'),
-                wantsNativeClick
-            })}`);
-                // 1) Resolve click target + coordinates.
-                // Native injection takes coordinates, so we pick a point that actually hits the target.
-                const actionRect = actionElement.getBoundingClientRect();
-                const actionCenter = clampToViewport(actionRect.left + actionRect.width / 2, actionRect.top + actionRect.height / 2);
-                const initialHit = document.elementFromPoint(actionCenter.x, actionCenter.y) || actionElement;
-                const clickTarget = isMenuToggle ? actionElement : initialHit;
-                const picked = pickClickPoint(clickTarget);
-                const x = picked.x;
-                const y = picked.y;
-                if (window.flutterSpatialNavDebug) {
-                    const hitDesc = describeElement(picked.hit);
-                    const targetDesc = describeElement(clickTarget);
-                    const actionDesc = describeElement(actionElement);
-                    const initialDesc = describeElement(initialHit);
-                    console.log(`[SpatialNav DEBUG] Hit-test ${safeJson({
-                    action: actionDesc,
-                    clickTarget: targetDesc,
-                    actionCenter: { x: actionCenter.x, y: actionCenter.y, hit: initialDesc },
-                    picked: { x, y, label: picked.label, hit: hitDesc }
-                })}`);
-                }
-                const commonOptions = {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: x,
-                    clientY: y,
-                    buttons: 1,
-                    detail: 1
-                };
-                if (useNativeClick) {
-                    // Native injection provides the real press (trusted MotionEvent).
-                    // Only prime hover/focus state here to avoid double-triggering mousedown/click handlers.
-                    if (typeof window.PointerEvent === 'function') {
-                        const pointerHover = {
-                            ...commonOptions,
-                            pointerId: 1,
-                            pointerType: 'touch',
-                            isPrimary: true,
-                            button: 0,
-                            pressure: 0
-                        };
-                        clickTarget.dispatchEvent(new window.PointerEvent('pointerover', pointerHover));
-                        clickTarget.dispatchEvent(new window.PointerEvent('pointerenter', pointerHover));
-                    }
-                    clickTarget.dispatchEvent(new MouseEvent('mouseover', commonOptions));
-                    clickTarget.dispatchEvent(new MouseEvent('mouseenter', commonOptions));
-                    if (typeof activeElement.focus === 'function')
-                        activeElement.focus();
-                    console.log('[SpatialNav] Requesting NATIVE MotionEvent injection for trusted execution');
-                    // Send message to Native Layer (via Extension -> Dart -> Native)
-                    // This triggers a REAL Android MotionEvent (Touch Down/Up) at the OS level
-                    // IMPORTANT: Scale CSS pixels to Physical pixels for Android MotionEvent
-                    const dpr = window.devicePixelRatio || 1.0;
-                    const finalX = x * dpr;
-                    const finalY = y * dpr;
-                    console.log(`[SpatialNav] Native Injection Request (simulateClick): ${safeJson({
-                    css: { x, y, point: picked.label },
-                    dpr,
-                    final: { x: finalX, y: finalY }
-                })}`);
-                    // Send to BACKGROUND SCRIPT instead of direct Native
-                    // Content scripts often cannot sendNativeMessage directly
-                    try {
-                        const message = { type: 'simulateClick', x: finalX, y: finalY };
-                        if (window.flutterSpatialNavDebug) {
-                            message.debug = {
-                                cssX: x,
-                                cssY: y,
-                                point: picked.label,
-                                hit: describeElement(picked.hit),
-                                target: describeElement(clickTarget),
-                                action: describeElement(actionElement),
-                                runtime: state.runtime?.mode
-                            };
-                        }
-                        if (globalThis.browser?.runtime === runtimeApi) {
-                            // Firefox-style Promise API
-                            const result = runtimeApi.sendMessage(message);
-                            if (result && typeof result.then === 'function') {
-                                result.then((response) => {
-                                    console.log('[SpatialNav] Background relay SUCCESS (promise):', response);
-                                }).catch((error) => {
-                                    console.error('[SpatialNav] Background relay FAIL (promise):', error);
-                                });
-                            }
-                        }
-                        else {
-                            // Chrome-style callback API
-                            runtimeApi.sendMessage(message, (response) => {
-                                const error = runtimeApi.lastError;
-                                if (error) {
-                                    console.error('[SpatialNav] Background relay FAIL (lastError):', error);
-                                }
-                                else {
-                                    console.log('[SpatialNav] Background relay SUCCESS (callback):', response);
-                                }
-                            });
-                        }
-                    }
-                    catch (e) {
-                        console.warn('[SpatialNav] Native injection unavailable, falling back to JS .click()', e);
-                        try {
-                            if (typeof clickTarget.click === 'function') {
-                                clickTarget.click();
-                            }
-                            else {
-                                activeElement.click();
-                            }
-                        }
-                        catch {
-                            activeElement.click();
-                        }
-                        event.preventDefault();
-                        event.stopPropagation();
-                        return;
-                    }
-                    // Visual feedback only (event result is handled by native)
-                    // Early return to prevent JS interference
-                    if (state.overlay) {
-                        state.overlay.classList.remove('click-animate');
-                        void state.overlay.offsetWidth;
-                        state.overlay.classList.add('click-animate');
-                        activeElement.classList.add('spatnav-pressed');
-                        setTimeout(() => {
-                            if (state.overlay)
-                                state.overlay.classList.remove('click-animate');
-                            activeElement.classList.remove('spatnav-pressed');
-                        }, 150);
-                    }
-                    // Prevent key default to avoid double-activation via browser key handling.
-                    event.preventDefault();
-                    event.stopPropagation();
-                    return;
-                }
-                else {
-                    // JS click simulation path (injected mode / no bridge).
-                    if (typeof window.PointerEvent === 'function') {
-                        const pointerBase = {
-                            ...commonOptions,
-                            pointerId: 1,
-                            pointerType: 'touch',
-                            isPrimary: true,
-                            button: 0,
-                            pressure: 0.5
-                        };
-                        clickTarget.dispatchEvent(new window.PointerEvent('pointerover', pointerBase));
-                        clickTarget.dispatchEvent(new window.PointerEvent('pointerenter', pointerBase));
-                        clickTarget.dispatchEvent(new window.PointerEvent('pointerdown', pointerBase));
-                    }
-                    clickTarget.dispatchEvent(new MouseEvent('mouseover', commonOptions));
-                    clickTarget.dispatchEvent(new MouseEvent('mouseenter', commonOptions));
-                    clickTarget.dispatchEvent(new MouseEvent('mousedown', commonOptions));
-                    if (typeof activeElement.focus === 'function')
-                        activeElement.focus();
-                    clickTarget.dispatchEvent(new MouseEvent('mouseup', commonOptions));
-                    if (typeof window.PointerEvent === 'function') {
-                        const pointerUp = {
-                            ...commonOptions,
-                            pointerId: 1,
-                            pointerType: 'touch',
-                            isPrimary: true,
-                            button: 0,
-                            pressure: 0
-                        };
-                        clickTarget.dispatchEvent(new window.PointerEvent('pointerup', pointerUp));
-                    }
-                    try {
-                        // Final native click
-                        if (typeof clickTarget.click === 'function') {
-                            clickTarget.click();
-                        }
-                        else {
-                            activeElement.click();
-                        }
-                        // Fallback for real anchors if .click() doesn't trigger navigation
-                        if (tagName === 'a' && href && href !== '#' && !href.startsWith('javascript:')) {
-                            console.log('[SpatialNav] Secondary fallback: location.assign for real anchor');
-                            setTimeout(() => {
-                                if (window.location.href.split('#')[0] === href.split('#')[0]) {
-                                    // If still on same page after 300ms, force navigation
-                                    // window.location.assign(href);
-                                }
-                            }, 300);
-                        }
-                    }
-                    catch (e) {
-                        activeElement.click();
-                    }
-                }
-                // Visual feedback
-                if (state.overlay) {
-                    state.overlay.classList.remove('click-animate');
-                    void state.overlay.offsetWidth;
-                    state.overlay.classList.add('click-animate');
-                    activeElement.classList.add('spatnav-pressed');
-                    setTimeout(() => {
-                        if (state.overlay)
-                            state.overlay.classList.remove('click-animate');
-                        activeElement.classList.remove('spatnav-pressed');
-                    }, 150);
-                }
-                // Prevent default for standard simulation to avoid double clicks
-                event.preventDefault();
-                event.stopPropagation();
-            }
+            handleActivationKey(event, state, myHandlerId);
             return;
         }
-        // Handle directional navigation (arrow keys)
+        // 7. Arrow keys — directional navigation.
         const keyMap = directionByKey;
-        if (!keyMap[event.key]) {
+        if (!keyMap[event.key])
             return;
-        }
-        // Debug logging
-        console.log('[SpatialNav] Key received:', event.key);
-        // Throttled refresh: only scan if enough time passed or state is dirty
+        log$6.debug(`directional key: ${event.key}`);
         const now = Date.now();
         const lastRefresh = state.lastRefreshTime || 0;
-        const throttleMs = 150; // Throttle to ~6fps for heavy DOMs
-        if (state.dirty || (now - lastRefresh > throttleMs)) {
+        if (state.dirty || now - lastRefresh > REFRESH_THROTTLE_MS) {
             refreshFocusables(state);
             state.lastRefreshTime = now;
             state.dirty = false;
         }
         if (state.focusables.length === 0) {
-            // Force refresh if we think there's nothing, just in case
             refreshFocusables(state);
             state.lastRefreshTime = Date.now();
             if (state.focusables.length === 0) {
-                console.log('[SpatialNav] No focusable elements found');
-                // CRITICAL: Still prevent default to stop focus escaping to address bar
+                log$6.debug('no focusable elements found');
+                // Block default to keep focus from escaping to the address bar.
                 event.preventDefault();
                 event.stopPropagation();
                 return;
@@ -4439,108 +4338,312 @@ body *:focus, body *:focus-visible {
         }
         const validActive = ensureValidFocus(state);
         if (!validActive) {
-            console.warn('[SpatialNav] Unable to recover focus, aborting navigation');
-            // CRITICAL: Still prevent default to stop focus escaping to address bar
+            log$6.warn('unable to recover focus — aborting navigation');
             event.preventDefault();
             event.stopPropagation();
             return;
         }
-        // Log current focus state
         const currentActive = validActive;
         const currentIndex = currentActive ? state.focusableElements.indexOf(currentActive) : -1;
-        console.log('[SpatialNav] Current focus:', describeElement(currentActive), 'index:', currentIndex);
-        // Log next targets
+        log$6.debug(`current focus: ${describeElement(currentActive)} (index=${currentIndex})`);
         const dirMap = directionByName;
-        // Cast to expected type - preview returns object with potential nulls
         const targets = updatePreviewTargets(currentIndex, findDirectionalCandidate, dirMap, state);
-        console.log('[SpatialNav] Next targets:', JSON.stringify({
+        log$6.debug('next targets', {
             up: targets.up?.data ? describeElement(targets.up.data.element) : null,
             down: targets.down?.data ? describeElement(targets.down.data.element) : null,
             left: targets.left?.data ? describeElement(targets.left.data.element) : null,
-            right: targets.right?.data ? describeElement(targets.right.data.element) : null
-        }));
+            right: targets.right?.data ? describeElement(targets.right.data.element) : null,
+        });
         const direction = keyMap[event.key];
-        if (window.flutterSpatialNavDebug) {
-            log.debug(`Moving in direction: ${direction.name}`);
-        }
-        // DEBUG: Log focus state before move
-        const beforeActive = getActiveElement();
-        const beforeIndex = beforeActive ? state.focusableElements.indexOf(beforeActive) : -1;
-        if (window.flutterSpatialNavDebug) {
-            log.debug(`BEFORE MOVE: active=${describeElement(beforeActive)}, index=${beforeIndex}`);
-        }
+        log$6.debug(`moving direction: ${direction.name}`);
         const moved = moveInDirection(direction, event, state);
-        // DEBUG: Log focus state after move
         const afterActive = getActiveElement();
-        const afterIndex = afterActive ? state.focusableElements.indexOf(afterActive) : -1;
-        if (window.flutterSpatialNavDebug) {
-            log.debug(`AFTER MOVE: active=${describeElement(afterActive)}, index=${afterIndex}, moved=${moved}`);
-        }
         if (!moved) {
-            if (window.flutterSpatialNavDebug) {
-                log.debug('Movement failed - boundary reached');
-            }
-            // Robustness: Force refresh and try ONE more time
-            // This handles cases where new content loaded but throttle skipped it
-            if (window.flutterSpatialNavDebug) {
-                log.debug('Retrying with forced refresh...');
-            }
+            log$6.debug('movement failed — retrying with forced refresh');
             refreshFocusables(state);
             state.lastRefreshTime = Date.now();
             const retryMoved = moveInDirection(direction, event, state);
             if (!retryMoved) {
-                if (window.flutterSpatialNavDebug) {
-                    log.debug('Retry failed - confirmed boundary');
-                }
+                log$6.debug(`boundary reached: ${direction.name}`);
                 state.lastBoundary = direction.name;
-                // CRITICAL: Prevent default to stop focus from escaping to address bar
                 event.preventDefault();
                 event.stopPropagation();
             }
             else {
-                if (window.flutterSpatialNavDebug) {
-                    log.debug('Retry successful!');
-                }
+                log$6.debug('retry succeeded');
                 const newActive = getActiveElement();
-                if (newActive) {
+                if (newActive)
                     scheduleOverlayUpdate(newActive, state);
-                }
             }
         }
         else {
-            if (window.flutterSpatialNavDebug) {
-                log.debug('Movement successful');
-            }
-            const newActive = getActiveElement();
-            console.log('[SpatialNav] New focus:', describeElement(newActive));
-            // Update overlay to show new focused element
-            if (newActive) {
-                scheduleOverlayUpdate(newActive, state);
-            }
+            log$6.debug(`new focus: ${describeElement(afterActive)}`);
+            if (afterActive)
+                scheduleOverlayUpdate(afterActive, state);
         }
     }
+    // =============================================================================
+    // Enter / Space activation
+    // =============================================================================
+    function handleActivationKey(event, state, handlerId) {
+        const activeElement = getActiveElement();
+        if (!activeElement)
+            return;
+        const tagName = activeElement.tagName.toLowerCase();
+        const htmlElement = activeElement;
+        const inputElement = activeElement;
+        const isEditable = htmlElement.isContentEditable ||
+            tagName === 'textarea' ||
+            (tagName === 'input' && !NON_EDITABLE_INPUT_TYPES.has(inputElement.type || ''));
+        if (isEditable)
+            return;
+        const href = safeGetAttr(activeElement, 'href');
+        const role = safeGetAttr(activeElement, 'role');
+        const ariaHasPopup = safeGetAttr(activeElement, 'aria-haspopup');
+        const ariaExpanded = safeGetAttr(activeElement, 'aria-expanded');
+        log$6.debug(`${event.key === ' ' ? 'SPACE' : 'ENTER'} on ${describeElement(activeElement)}`, {
+            tagName,
+            role,
+            hasHref: !!href,
+            ariaHasPopup,
+            ariaExpanded,
+        });
+        // Prefer the nearest menu-toggle element; many nav menus attach handlers to the toggle.
+        let actionElement = activeElement;
+        try {
+            const menuToggle = activeElement.closest?.('[aria-haspopup], [aria-expanded]');
+            if (menuToggle)
+                actionElement = menuToggle;
+        }
+        catch {
+            // ignore
+        }
+        const actionTag = actionElement.tagName.toLowerCase();
+        const actionRole = safeGetAttr(actionElement, 'role');
+        const isMenuToggle = isMenuToggleElement(actionElement);
+        // Native click is needed for elements that gate behavior on Trusted events:
+        // anchors without href, role=button divs/spans, custom interactive elements,
+        // or media (lightboxes/players). See NATIVE_CLICK_TAGS.
+        const wantsNativeClick = (actionTag === 'a' && !actionElement.hasAttribute('href')) ||
+            NATIVE_CLICK_TAGS.has(actionTag) ||
+            actionRole === 'button';
+        // `browser` (Firefox) and `chrome` (Chromium) may both be undeclared in
+        // standalone/test environments — use globalThis lookup so a missing global
+        // doesn't throw ReferenceError.
+        const g = globalThis;
+        const runtimeApi = g.browser?.runtime ?? g.chrome?.runtime;
+        const canRequestNativeClick = !!runtimeApi && typeof runtimeApi.sendMessage === 'function';
+        if (isMenuToggle) {
+            const didClose = tryCloseOpenMenuToggle({
+                actionElement,
+                state,
+                event,
+                handlerId,
+                runtimeApi,
+                canRequestNativeClick,
+            });
+            if (didClose)
+                return;
+        }
+        const useNativeClick = canRequestNativeClick && wantsNativeClick;
+        log$6.debug(`click strategy: ${useNativeClick ? 'NATIVE' : 'JS .click()'}`, {
+            actionTag,
+            actionRole,
+            isMenuToggle,
+            runtimeMode: state.runtime?.mode,
+        });
+        // Pick a coordinate that hits the visible target.
+        const actionRect = actionElement.getBoundingClientRect();
+        const actionCenter = clampToViewport(actionRect.left + actionRect.width / 2, actionRect.top + actionRect.height / 2);
+        const initialHit = document.elementFromPoint(actionCenter.x, actionCenter.y) || actionElement;
+        const clickTarget = isMenuToggle ? actionElement : initialHit;
+        const picked = pickClickPoint(clickTarget);
+        const x = picked.x;
+        const y = picked.y;
+        log$6.debug('hit-test', {
+            action: describeElement(actionElement),
+            clickTarget: describeElement(clickTarget),
+            actionCenter: { x: actionCenter.x, y: actionCenter.y, hit: describeElement(initialHit) },
+            picked: { x, y, label: picked.label, hit: describeElement(picked.hit) },
+        });
+        const commonOptions = {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: x,
+            clientY: y,
+            buttons: 1,
+            detail: 1,
+        };
+        if (useNativeClick) {
+            dispatchHoverPrime(clickTarget, commonOptions);
+            if (typeof htmlElement.focus === 'function')
+                htmlElement.focus();
+            log$6.debug('requesting native MotionEvent injection');
+            // Convert CSS px → physical px for Android MotionEvent.
+            const dpr = window.devicePixelRatio || 1.0;
+            const finalX = x * dpr;
+            const finalY = y * dpr;
+            log$6.debug('native injection request', {
+                css: { x, y, point: picked.label },
+                dpr,
+                final: { x: finalX, y: finalY },
+            });
+            try {
+                const message = {
+                    type: 'simulateClick',
+                    x: finalX,
+                    y: finalY,
+                };
+                const sendMessage = runtimeApi.sendMessage;
+                if (typeof sendMessage !== 'function') {
+                    throw new Error('runtime.sendMessage unavailable');
+                }
+                if (g.browser?.runtime === runtimeApi) {
+                    // Firefox: Promise API
+                    const result = sendMessage(message);
+                    if (result && typeof result.then === 'function') {
+                        result
+                            .then((response) => {
+                            log$6.debug('background relay success (promise)', response);
+                        })
+                            .catch((error) => {
+                            log$6.error('background relay failed (promise)', error);
+                        });
+                    }
+                }
+                else {
+                    // Chrome: callback API
+                    sendMessage(message, (response) => {
+                        const error = runtimeApi.lastError;
+                        if (error) {
+                            log$6.error('background relay failed (lastError)', error);
+                        }
+                        else {
+                            log$6.debug('background relay success (callback)', response);
+                        }
+                    });
+                }
+            }
+            catch (e) {
+                log$6.warn('native injection unavailable, falling back to JS .click()', e);
+                try {
+                    if (typeof clickTarget.click === 'function') {
+                        clickTarget.click();
+                    }
+                    else {
+                        htmlElement.click();
+                    }
+                }
+                catch {
+                    htmlElement.click();
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+            applyClickFeedback(state, htmlElement);
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
+        // JS click simulation (no extension bridge or doesn't need trusted event).
+        dispatchFullPointerSequence(clickTarget, htmlElement, commonOptions);
+        try {
+            if (typeof clickTarget.click === 'function') {
+                clickTarget.click();
+            }
+            else {
+                htmlElement.click();
+            }
+        }
+        catch {
+            htmlElement.click();
+        }
+        applyClickFeedback(state, htmlElement);
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    function dispatchHoverPrime(target, opts) {
+        if (typeof PointerEvent === 'function') {
+            const pointerHover = {
+                ...opts,
+                pointerId: 1,
+                pointerType: 'touch',
+                isPrimary: true,
+                button: 0,
+                pressure: 0,
+            };
+            target.dispatchEvent(new PointerEvent('pointerover', pointerHover));
+            target.dispatchEvent(new PointerEvent('pointerenter', pointerHover));
+        }
+        target.dispatchEvent(new MouseEvent('mouseover', opts));
+        target.dispatchEvent(new MouseEvent('mouseenter', opts));
+    }
+    function dispatchFullPointerSequence(target, activeElement, opts) {
+        if (typeof PointerEvent === 'function') {
+            const pointerBase = {
+                ...opts,
+                pointerId: 1,
+                pointerType: 'touch',
+                isPrimary: true,
+                button: 0,
+                pressure: 0.5,
+            };
+            target.dispatchEvent(new PointerEvent('pointerover', pointerBase));
+            target.dispatchEvent(new PointerEvent('pointerenter', pointerBase));
+            target.dispatchEvent(new PointerEvent('pointerdown', pointerBase));
+        }
+        target.dispatchEvent(new MouseEvent('mouseover', opts));
+        target.dispatchEvent(new MouseEvent('mouseenter', opts));
+        target.dispatchEvent(new MouseEvent('mousedown', opts));
+        if (typeof activeElement.focus === 'function')
+            activeElement.focus();
+        target.dispatchEvent(new MouseEvent('mouseup', opts));
+        if (typeof PointerEvent === 'function') {
+            const pointerUp = {
+                ...opts,
+                pointerId: 1,
+                pointerType: 'touch',
+                isPrimary: true,
+                button: 0,
+                pressure: 0,
+            };
+            target.dispatchEvent(new PointerEvent('pointerup', pointerUp));
+        }
+    }
+    function applyClickFeedback(state, activeElement) {
+        if (!state.overlay)
+            return;
+        state.overlay.classList.remove('click-animate');
+        void state.overlay.offsetWidth; // force reflow so the animation restarts
+        state.overlay.classList.add('click-animate');
+        activeElement.classList.add('spatnav-pressed');
+        setTimeout(() => {
+            if (state.overlay)
+                state.overlay.classList.remove('click-animate');
+            activeElement.classList.remove('spatnav-pressed');
+        }, CLICK_ANIMATION_MS);
+    }
+    // =============================================================================
+    // Scroll listener
+    // =============================================================================
     /**
-     * Attach scroll listener with capture for sub-scrollers.
-     * Uses requestAnimationFrame with 8px threshold to prevent jitter.
-     *
-     * LLM 2 + LLM 4: rAF + threshold + capture:true
-     * FIX (HIGH): Track element scroll positions, not just window.scrollY
-     *
-     * @param state - Global state object
+     * Attach a scroll listener (capture phase) that updates the overlay when the
+     * focused element's viewport position changes. Uses rAF + per-element scroll
+     * cache to coalesce updates and skip jitter from smooth-scrolling.
      */
     function attachScrollListener(state) {
         const config = state.config;
-        // FIX (MEDIUM): Gate listener behind config option
         if (config.observeScroll === false) {
-            // console.log('[SpatialNav] Scroll listener disabled by config');
+            log$6.debug('scroll listener disabled by config');
             return;
         }
-        // FIX (HIGH): Use WeakMap to track scroll positions for each element
         const scrollPositions = new WeakMap();
         let scrollTimer = null;
         window.addEventListener('scroll', (event) => {
             if (scrollTimer)
-                return; // Throttle to one update per frame
+                return;
             scrollTimer = requestAnimationFrame(() => {
                 const rawTarget = event && event.target ? event.target : window;
                 if (!rawTarget) {
@@ -4549,7 +4652,6 @@ body *:focus, body *:focus-visible {
                 }
                 const target = rawTarget === document ? window : rawTarget;
                 const threshold = config.scrollThreshold || 8;
-                // FIX (HIGH): Get scroll position from the actual scrolling element
                 let currentScrollY;
                 let currentScrollX;
                 if (target === window) {
@@ -4564,17 +4666,18 @@ body *:focus, body *:focus-visible {
                     scrollTimer = null;
                     return;
                 }
-                // Get cached position
-                const cached = scrollPositions.get(target) || { scrollY: currentScrollY, scrollX: currentScrollX };
+                const cached = scrollPositions.get(target) || {
+                    scrollY: currentScrollY,
+                    scrollX: currentScrollX,
+                };
                 const deltaY = Math.abs(currentScrollY - cached.scrollY);
                 const deltaX = Math.abs(currentScrollX - cached.scrollX);
-                // Only update if scroll is significant (prevents jitter on smooth scroll)
+                // Only update if scroll moved past threshold (prevents smooth-scroll jitter).
                 if (deltaY > threshold || deltaX > threshold) {
                     const active = getActiveElement();
                     if (active && state.currentIndex !== -1) {
                         const currentEntry = state.focusables[state.currentIndex];
                         if (currentEntry) {
-                            // Update geometry for current element (viewport position changed)
                             const rect = active.getBoundingClientRect();
                             currentEntry.left = rect.left;
                             currentEntry.top = rect.top;
@@ -4586,61 +4689,55 @@ body *:focus, body *:focus-visible {
                             scheduleOverlayUpdate(active, state);
                         }
                     }
-                    // Update cached position
-                    scrollPositions.set(target, { scrollY: currentScrollY, scrollX: currentScrollX });
+                    scrollPositions.set(target, {
+                        scrollY: currentScrollY,
+                        scrollX: currentScrollX,
+                    });
                 }
                 scrollTimer = null;
             });
         }, {
-            capture: true, // LLM 4: Capture phase detects overflow:auto scrolling
-            passive: true // Don't block scrolling
+            capture: true, // Catch overflow:auto sub-scrollers in capture phase
+            passive: true, // Don't block scrolling
         });
-        // Store scroll listener state for SPA navigation tracking
         state.scrollListenerAttached = true;
     }
+    // =============================================================================
+    // Public attachment
+    // =============================================================================
     /**
      * Attach global event listeners.
      *
-     * @param state - Global state object
+     * Generates a fresh `handlerId` and stamps it on the DOM so that older handlers
+     * (from prior content-script injections) self-disable on the next keypress.
+     *
+     * Why state-only guard, not window-level: window properties live in isolated
+     * worlds, so a window flag from a previous injection wouldn't be visible here
+     * — we'd attach a duplicate handler. The DOM attribute is shared; the
+     * stale-handler guard inside `handleKeyDown` deduplicates at event time.
      */
     function attachHandlers(state) {
-        // Generate unique handler ID using timestamp + DOM counter + random
-        // CRITICAL: Use DOM attribute for counter since module variables are isolated per world
-        const counterAttr = document.documentElement.getAttribute('data-spatnav-handler-counter');
+        // Bump the handler counter on the DOM (shared across isolated worlds).
+        const counterAttr = document.documentElement.getAttribute(HANDLER_COUNTER_ATTR);
         const existingCounter = parseInt(counterAttr || '0', 10);
         const newCounter = existingCounter + 1;
-        document.documentElement.setAttribute('data-spatnav-handler-counter', String(newCounter));
-        // console.log(`[SpatialNav DEBUG] Counter: existing="${counterAttr}" (${existingCounter}) → new=${newCounter}`);
-        // This ensures uniqueness even when multiple inits happen in same millisecond
+        document.documentElement.setAttribute(HANDLER_COUNTER_ATTR, String(newCounter));
+        // Compose a unique handler ID from time + counter + random — same-millisecond
+        // inits still get distinct IDs.
         const handlerId = (Date.now() % 100000) * 1000 + newCounter * 100 + Math.floor(Math.random() * 100);
-        // console.log(`[SpatialNav DEBUG] attachHandlers called, handlerId: ${handlerId}`);
-        // CRITICAL: Use DOM attribute for handler ID instead of window property!
-        // WebExtension content scripts run in isolated worlds with separate window objects,
-        // but they SHARE the DOM. So document.documentElement is the same across all injections.
-        document.documentElement.getAttribute('data-spatnav-handler-id');
-        // console.log(`[SpatialNav DEBUG] DOM handler ID: ${domHandlerId}`);
-        // console.log(`[SpatialNav DEBUG] state.handlersAttached: ${state.handlersAttached}`);
-        // STATE-level guard only - window guard was causing stale handlers on navigation
-        // Event-level deduplication (__spatnav_processed__) handles multiple handlers
         if (state.handlersAttached) {
-            // console.log(`[SpatialNav DEBUG] ⚠️ State already has handlers, skipping`);
+            log$6.debug('state already has handlers, skipping');
             return;
         }
-        // console.log(`[SpatialNav DEBUG] ✅ ATTACHING NEW HANDLERS (ID: ${handlerId})`);
-        // console.log('[SpatialNav] Attaching handlers to window');
-        // Store handler ID in DOM (shared across isolated worlds) instead of window (isolated)
-        document.documentElement.setAttribute('data-spatnav-handler-id', String(handlerId));
+        document.documentElement.setAttribute(HANDLER_ID_ATTR, String(handlerId));
         state.handlerId = handlerId;
-        window.__SPATIAL_NAV_HANDLER_ID__ = handlerId; // Keep for backwards compat
+        window.__SPATIAL_NAV_HANDLER_ID__ = handlerId;
         window.__SPATIAL_NAV_KEYDOWN_COUNT__ = 0;
-        // CRITICAL: Capture handlerId in closure - state is shared across all handlers
-        // so we can't rely on state.handlerId (it gets overwritten by newer handlers)
+        // Capture handlerId in closure — `state.handlerId` gets overwritten by newer handlers.
         const capturedHandlerId = handlerId;
         window.addEventListener('keydown', function (e) {
-            // Check if this handler is stale using DOM attribute (shared across isolated worlds)
-            const currentDomHandlerId = document.documentElement.getAttribute('data-spatnav-handler-id');
+            const currentDomHandlerId = document.documentElement.getAttribute(HANDLER_ID_ATTR);
             if (String(capturedHandlerId) !== currentDomHandlerId) {
-                // console.log(`[SpatialNav DEBUG] ⚠️ STALE HANDLER BLOCKED (DOM check): myId=${capturedHandlerId}, currentId=${currentDomHandlerId}`);
                 return;
             }
             handleKeyDown(e, state);
@@ -4652,11 +4749,6 @@ body *:focus, body *:focus-visible {
             refreshFocusables(state);
             scheduleOverlayUpdate(target, state);
         }, true);
-        window.addEventListener('blur', function () {
-            // Optional: hide overlay on blur?
-            // For now we keep it to show last focused position
-        }, true);
-        // TODO 1: Attach scroll listener with capture
         attachScrollListener(state);
         state.handlersAttached = true;
     }
@@ -4667,6 +4759,17 @@ body *:focus, body *:focus-visible {
      * Handles DOM mutation detection with buffered architecture and conditional refresh.
      * Features framework-aware refresh scheduling for React/Vue/Angular.
      */
+    const log$5 = createLogger('Observer');
+    /** Mutation attributes worth observing — narrow filter improves perf on busy SPAs. */
+    const RELEVANT_ATTRIBUTES = [
+        'style',
+        'class',
+        'disabled',
+        'hidden',
+        'aria-hidden',
+        'tabindex',
+        'contenteditable',
+    ];
     // Mutation buffer for batching changes
     const mutationBuffer = [];
     let mutationTimer = null;
@@ -4694,7 +4797,7 @@ body *:focus, body *:focus-visible {
                     // Fallback: wait for microtask + rAF
                     Promise.resolve().then(() => requestAnimationFrame(callback));
                 }
-            }
+            },
         },
         vue: {
             name: 'Vue',
@@ -4707,7 +4810,7 @@ body *:focus, body *:focus-visible {
             scheduleRefresh: (callback) => {
                 // Vue uses nextTick which schedules after microtasks
                 Promise.resolve().then(() => setTimeout(callback, 50));
-            }
+            },
         },
         angular: {
             name: 'Angular',
@@ -4728,7 +4831,7 @@ body *:focus, body *:focus-visible {
                 }
                 // Fallback: wait for zone.js to settle
                 setTimeout(callback, 100);
-            }
+            },
         },
         svelte: {
             name: 'Svelte',
@@ -4738,8 +4841,8 @@ body *:focus, body *:focus-visible {
             scheduleRefresh: (callback) => {
                 // Svelte is synchronous, just use microtask
                 Promise.resolve().then(callback);
-            }
-        }
+            },
+        },
     };
     /**
      * Detect which framework is being used (cached).
@@ -4758,13 +4861,13 @@ body *:focus, body *:focus-visible {
         for (const [, adapter] of Object.entries(frameworkAdapters)) {
             try {
                 if (adapter.detect()) {
-                    // console.log('[SpatialNav] Detected framework:', adapter.name);
+                    log$5.debug(`detected framework: ${adapter.name}`);
                     state.detectedFramework = adapter;
                     return adapter;
                 }
             }
             catch {
-                // Detection failed, try next
+                // Detection failed, try next.
             }
         }
         state.detectedFramework = false; // Mark as "no framework detected"
@@ -4810,28 +4913,25 @@ body *:focus, body *:focus-visible {
             // This prevents "popping to top" when virtual scroll recycles the focused element
             storePositionHint(state);
             // Check if we need full refresh (DOM structure changed)
-            const needsFullRefresh = mutationBuffer.some(m => m.type === 'childList');
+            const needsFullRefresh = mutationBuffer.some((m) => m.type === 'childList');
             // Invalidate precomputed cache
             state.dirty = true;
             state.precomputedTargets = null;
             const doRefresh = () => {
                 if (needsFullRefresh) {
-                    // console.log('[SpatialNav] DOM childList mutation, full refresh');
+                    log$5.debug('childList mutation → full refresh');
                     refreshFocusables(state);
                 }
                 else {
-                    // console.log('[SpatialNav] Attribute mutation, incremental update');
+                    log$5.debug('attribute mutation → incremental update');
                     refreshAttributes(state, mutationBuffer);
                 }
-                // Update overlay if current element is still valid
-                // Explicitly cast result to HTMLElement since scheduleOverlayUpdate expects it
                 const active = getActiveElement();
                 if (active && state.focusableElements && state.focusableElements.includes(active)) {
                     scheduleOverlayUpdate(active, state);
                 }
                 else if (state.overlay) {
-                    // Current element became unfocusable or was removed
-                    console.warn('[SpatialNav] Current focus invalidated by mutation');
+                    log$5.debug('current focus invalidated by mutation, hiding overlay');
                     hideOverlay(state);
                 }
             };
@@ -4851,19 +4951,16 @@ body *:focus, body *:focus-visible {
             return;
         const config = state.config;
         if (config.observeMutations === false) {
-            // console.log('[SpatialNav] MutationObserver disabled by config');
+            log$5.debug('mutation observer disabled by config');
             return;
         }
         const observer = new MutationObserver((mutations) => {
-            // Filter for relevant mutations only
-            const relevantMutations = mutations.filter(mutation => {
+            const relevantMutations = mutations.filter((mutation) => {
                 if (mutation.type === 'childList') {
                     return mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0;
                 }
                 if (mutation.type === 'attributes') {
-                    // FIX (LOW): Include contenteditable for dynamic editors (Twitter compose, Medium)
-                    const relevantAttrs = ['style', 'class', 'disabled', 'hidden', 'aria-hidden', 'tabindex', 'contenteditable'];
-                    return relevantAttrs.includes(mutation.attributeName || '');
+                    return RELEVANT_ATTRIBUTES.includes(mutation.attributeName || '');
                 }
                 return false;
             });
@@ -4876,268 +4973,616 @@ body *:focus, body *:focus-visible {
             childList: true,
             subtree: true,
             attributes: true,
-            attributeFilter: ['style', 'class', 'disabled', 'hidden', 'aria-hidden', 'tabindex', 'contenteditable'] // FIX (LOW)
+            attributeFilter: RELEVANT_ATTRIBUTES,
         });
         state.mutationObserver = observer;
-        // console.log('[SpatialNav] MutationObserver attached with buffer strategy');
+        log$5.debug('mutation observer attached');
     }
 
     /**
-     * Debug utilities for Spatial Navigation System
+     * Deprecation helpers for legacy `flutter*` window APIs.
      *
-     * Exposes window.spatialNavDebug API for instrumentation and testing.
+     * The library renamed its public globals in v3.0.0 (`flutterFocusState` →
+     * `spatialNavState`, `flutterShowOverlay` → `showSpatialNavOverlay`). Removing
+     * the old names immediately would break flutter-geckoview hosts that took the
+     * v2 API as a hard dependency. We keep the legacy names alive for one major
+     * version, but route the first read through a getter that warns once.
+     *
+     * Schedule:
+     *   - v3.x — legacy aliases work, log a warning on first access
+     *   - v4.0 — legacy aliases removed
      */
+    const log$4 = createLogger('Deprecation');
+    const warnedKeys = new Set();
+    function warnOnce(name, replacement) {
+        if (warnedKeys.has(name))
+            return;
+        warnedKeys.add(name);
+        log$4.warn(`\`window.${name}\` is deprecated and will be removed in v4. ` +
+            `Use \`window.${replacement}\` instead.`);
+    }
     /**
-     * Initialize debug API on window object.
-     *
-     * @param state - Global state object
+     * Define a one-shot warning getter for a legacy window property.
+     * Falls back to plain assignment if `defineProperty` is rejected (some
+     * embedded browsers do not allow it on `window`).
      */
-    function initDebugApi(state) {
-        window.flutterFocusDebug = window.flutterFocusDebug || {};
-        // Expose instrumentation for tests
-        window.flutterFocusInstrumentation = state.instrumentation;
-        // Programmatic movement
-        window.flutterFocusDebug.move = function (directionName) {
-            // Safe cast as we check for validity
-            const direction = directionByName[directionName];
-            if (!direction) {
-                return false;
-            }
-            refreshFocusables(state);
-            const moved = moveInDirection(direction, null, state);
-            try {
-                document.title = 'focusDebugMove:' + JSON.stringify({
-                    direction: directionName,
-                    moved: !!moved,
-                    active: describeElement(getActiveElement()),
-                    timestamp: Date.now()
-                });
-            }
-            catch (err) {
-                // ignore serialization issues
-            }
-            return moved;
-        };
-        // Toggle preview visuals
-        window.flutterFocusDebug.setPreviewEnabled = function (enabled) {
-            state.previewEnabled = enabled !== false;
-            if (!state.previewEnabled) {
-                hidePreviewElements(state);
-                state.nextTargets = { up: null, down: null, left: null, right: null };
-            }
-            else {
-                const active = getActiveElement();
-                if (active) {
-                    const dirMap = directionByName;
-                    updatePreviewVisuals(active, null, findDirectionalCandidate, dirMap, describeElement, state);
-                }
-            }
-            try {
-                document.title = 'focusPreviewToggle:' + JSON.stringify({
-                    enabled: state.previewEnabled,
-                    timestamp: Date.now()
-                });
-            }
-            catch (err) {
-                // ignore serialization issues
-            }
-            return state.previewEnabled;
-        };
-        // Inspect current targets
-        window.flutterFocusDebug.previewTargets = function (label) {
-            const summary = {};
-            directionKeys.forEach(function (direction) {
-                const entry = state.nextTargets && state.nextTargets[direction];
-                summary[direction] =
-                    entry && entry.data && entry.data.element ? describeElement(entry.data.element) : '[blocked]';
+    function defineLegacyAlias(name, replacement, value) {
+        try {
+            Object.defineProperty(window, name, {
+                configurable: true,
+                enumerable: true,
+                get: () => {
+                    warnOnce(name, replacement);
+                    return value;
+                },
+                set: (v) => {
+                    warnOnce(name, replacement);
+                    window[`__${name}_value`] = v;
+                },
             });
-            try {
-                document.title = 'focusPreview:' + JSON.stringify({
-                    label: label || '',
-                    targets: summary,
-                    timestamp: Date.now()
-                });
-            }
-            catch (err) {
-                // ignore serialization issues
-            }
-            return summary;
+        }
+        catch {
+            window[name] = value;
+        }
+    }
+    /**
+     * Install legacy state/overlay aliases that warn on first access.
+     *
+     * Properties:
+     *   - `window.flutterFocusState`        → `window.spatialNavState`
+     *   - `window.flutterShowOverlay(el)`   → `window.showSpatialNavOverlay(el)`
+     */
+    function installLegacyDeprecations(state, overlayHandler) {
+        defineLegacyAlias('flutterFocusState', 'spatialNavState', state);
+        const legacyShow = (element) => {
+            warnOnce('flutterShowOverlay', 'showSpatialNavOverlay');
+            overlayHandler(element);
         };
-        // Snapshot instrumentation metrics
-        window.flutterFocusDebug.snapshot = function (label) {
-            const inst = state.instrumentation;
-            try {
-                document.title = 'focusInstrumentation:' + JSON.stringify({
-                    label: label || '',
-                    lastOverlay: inst.lastOverlay || '',
-                    lastActive: inst.lastActive || '',
-                    mismatchCount: inst.mismatchCount || 0,
-                    overlayIndex: typeof inst.overlayIndex === 'number' ? inst.overlayIndex : -1,
-                    activeIndex: typeof inst.activeIndex === 'number' ? inst.activeIndex : -1,
-                    focusableCount: state.focusableCount || 0,
-                    lastDirection: inst.lastDirection || '',
-                    timestamp: Date.now()
-                });
-            }
-            catch (err) {
-                // ignore
-            }
-            return inst;
-        };
-        // Expose performance monitoring (TODO 4)
-        window.flutterSpatNavPerf = function () {
+        window.flutterShowOverlay = legacyShow;
+    }
+    /**
+     * Install legacy debug-API aliases that warn on first access.
+     *
+     * Properties:
+     *   - `window.flutterFocusDebug`         → `window.spatialNavDebug`
+     *   - `window.flutterFocusInstrumentation` → `window.spatialNavInstrumentation`
+     *   - `window.flutterSpatNavPerf`        → `window.spatialNavPerf`
+     */
+    function installDebugDeprecations(state, api) {
+        defineLegacyAlias('flutterFocusDebug', 'spatialNavDebug', api);
+        defineLegacyAlias('flutterFocusInstrumentation', 'spatialNavInstrumentation', state.instrumentation);
+        const legacyPerf = () => {
+            warnOnce('flutterSpatNavPerf', 'spatialNavPerf');
             return state.perf || {};
         };
+        window.flutterSpatNavPerf = legacyPerf;
     }
 
     /**
-     * GeckoView Spatial Navigation
+     * Debug utilities for Spatial Navigation.
      *
-     * Orchestrates initialization of all spatial navigation modules.
-     * This file is the entry point for the rollup bundle.
+     * Exposes `window.spatialNavDebug` (programmatic move, preview toggle,
+     * instrumentation snapshot). The legacy `flutterFocusDebug`,
+     * `flutterFocusInstrumentation`, and `flutterSpatNavPerf` names are kept as
+     * deprecated aliases via {@link installDebugDeprecations} in
+     * {@link ./deprecation}; they will be removed in v4.
+     */
+    /**
+     * Install the debug API on `window.spatialNavDebug` and wire the legacy
+     * `flutterFocusDebug` / `flutterFocusInstrumentation` / `flutterSpatNavPerf`
+     * aliases through the deprecation module.
+     */
+    function initDebugApi(state) {
+        const api = {
+            move: (directionName) => {
+                const direction = directionByName[directionName];
+                if (!direction)
+                    return false;
+                refreshFocusables(state);
+                const moved = moveInDirection(direction, null, state);
+                try {
+                    document.title =
+                        'focusDebugMove:' +
+                            JSON.stringify({
+                                direction: directionName,
+                                moved: !!moved,
+                                active: describeElement(getActiveElement()),
+                                timestamp: Date.now(),
+                            });
+                }
+                catch {
+                    // Title serialization can fail on detached docs.
+                }
+                return moved;
+            },
+            setPreviewEnabled: (enabled) => {
+                state.previewEnabled = enabled !== false;
+                if (!state.previewEnabled) {
+                    hidePreviewElements(state);
+                    state.nextTargets = { up: null, down: null, left: null, right: null };
+                }
+                else {
+                    const active = getActiveElement();
+                    if (active) {
+                        const dirMap = directionByName;
+                        updatePreviewVisuals(active, null, findDirectionalCandidate, dirMap, describeElement, state);
+                    }
+                }
+                try {
+                    document.title =
+                        'focusPreviewToggle:' +
+                            JSON.stringify({ enabled: state.previewEnabled, timestamp: Date.now() });
+                }
+                catch {
+                    // ignore
+                }
+                return state.previewEnabled;
+            },
+            previewTargets: (label) => {
+                const summary = {};
+                directionKeys.forEach((direction) => {
+                    const entry = state.nextTargets && state.nextTargets[direction];
+                    summary[direction] =
+                        entry && entry.data && entry.data.element
+                            ? describeElement(entry.data.element)
+                            : '[blocked]';
+                });
+                try {
+                    document.title =
+                        'focusPreview:' +
+                            JSON.stringify({ label: label || '', targets: summary, timestamp: Date.now() });
+                }
+                catch {
+                    // ignore
+                }
+                return summary;
+            },
+            snapshot: (label) => {
+                const inst = state.instrumentation;
+                try {
+                    document.title =
+                        'focusInstrumentation:' +
+                            JSON.stringify({
+                                label: label || '',
+                                lastOverlay: inst.lastOverlay || '',
+                                lastActive: inst.lastActive || '',
+                                mismatchCount: inst.mismatchCount || 0,
+                                overlayIndex: typeof inst.overlayIndex === 'number' ? inst.overlayIndex : -1,
+                                activeIndex: typeof inst.activeIndex === 'number' ? inst.activeIndex : -1,
+                                focusableCount: state.focusableCount || 0,
+                                lastDirection: inst.lastDirection || '',
+                                timestamp: Date.now(),
+                            });
+                }
+                catch {
+                    // ignore
+                }
+                return inst;
+            },
+        };
+        window.spatialNavDebug = api;
+        window.spatialNavInstrumentation = state.instrumentation;
+        window.spatialNavPerf = () => state.perf || {};
+        // Legacy aliases — fire warning on first access.
+        installDebugDeprecations(state, api);
+    }
+
+    /**
+     * Abstract Messaging Adapter Interface
      *
-     * Features:
-     * - WICG Spatial Navigation API compatibility (window.navigate, Element.spatialNavigationSearch)
-     * - Connection-based native messaging for lower latency
-     * - Background script for robust message routing
-     * - TypeScript type definitions
-     * - Multiple output formats (UMD, ESM, IIFE)
-     * - GitHub Packages publishing ready
+     * Defines the contract for native messaging implementations.
+     * Allows spatial navigation to work with different webview hosts:
+     * - GeckoView (WebExtension API)
+     * - react-native-webview (postMessage bridge)
+     * - WKWebView (webkit.messageHandlers)
+     * - Android WebView (JavascriptInterface)
+     */
+    const log$3 = createLogger('Messaging');
+    /**
+     * Base class with common functionality for messaging adapters.
+     */
+    class BaseMessagingAdapter {
+        constructor() {
+            this._state = 'disconnected';
+            this.messageCallbacks = new Set();
+            this.eventHandlers = {};
+        }
+        get state() {
+            return this._state;
+        }
+        onMessage(callback) {
+            this.messageCallbacks.add(callback);
+            return () => {
+                this.messageCallbacks.delete(callback);
+            };
+        }
+        on(events) {
+            this.eventHandlers = { ...this.eventHandlers, ...events };
+        }
+        /**
+         * Dispatch a message to all registered callbacks.
+         */
+        dispatchMessage(message) {
+            for (const callback of this.messageCallbacks) {
+                try {
+                    callback(message);
+                }
+                catch (error) {
+                    log$3.error('callback error', error);
+                }
+            }
+            this.eventHandlers.onMessage?.(message);
+        }
+        /**
+         * Update connection state and emit events.
+         */
+        setState(newState) {
+            const oldState = this._state;
+            this._state = newState;
+            if (oldState !== newState) {
+                if (newState === 'connected') {
+                    this.eventHandlers.onConnect?.();
+                }
+                else if (newState === 'disconnected' && oldState === 'connected') {
+                    this.eventHandlers.onDisconnect?.();
+                }
+            }
+        }
+        /**
+         * Emit an error event.
+         */
+        emitError(error) {
+            this._state = 'error';
+            this.eventHandlers.onError?.(error);
+        }
+    }
+
+    /**
+     * GeckoView Messaging Adapter
+     *
+     * Implements native messaging for the GeckoView WebExtension environment.
+     * Uses `browser.runtime.connect()` for a persistent connection to the
+     * background script, falling back to `browser.runtime.sendNativeMessage()`
+     * for one-shot messages when no persistent channel is available.
+     *
+     * Reconnect strategy:
+     *   - Each disconnect schedules a reconnect with exponential backoff
+     *   - Backoff is capped at MAX_RECONNECT_DELAY_MS (30s) to prevent
+     *     unbounded growth on a flapping native side
+     *   - Outbound queue is bounded at MAX_QUEUE_SIZE so a long disconnect
+     *     can't blow up memory
+     *
+     * @see https://firefox-source-docs.mozilla.org/mobile/android/geckoview/consumer/web-extensions.html
+     */
+    const log$2 = createLogger('Messaging');
+    /**
+     * Safe accessor for the WebExtension `browser` global. In standalone/test
+     * environments the global may be entirely absent — `typeof` guards against
+     * `ReferenceError` that would otherwise be thrown by direct access.
+     */
+    function getBrowser() {
+        if (typeof browser !== 'undefined')
+            return browser;
+        return undefined;
+    }
+    /** Default native app identifier — override via constructor options. */
+    const DEFAULT_NATIVE_APP_ID = 'flutter_geckoview';
+    const PORT_NAME = 'spatial-nav-content';
+    /** Cap reconnect backoff so a flapping native peer doesn't push delay to infinity. */
+    const MAX_RECONNECT_DELAY_MS = 30000;
+    /** Initial reconnect backoff (doubled on each failure, capped at MAX_RECONNECT_DELAY_MS). */
+    const INITIAL_RECONNECT_DELAY_MS = 1000;
+    /** Maximum reconnect attempts before giving up entirely. */
+    const MAX_RECONNECT_ATTEMPTS = 6;
+    /** Outbound queue size — drops oldest message past this. */
+    const MAX_QUEUE_SIZE = 100;
+    /**
+     * GeckoView WebExtension messaging adapter.
+     *
+     * Connects to the background script which relays messages to the native app.
+     */
+    class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
+        constructor(options = {}) {
+            super();
+            this.id = 'geckoview';
+            this.name = 'GeckoView WebExtension';
+            this.port = null;
+            this.messageQueue = [];
+            this.reconnectAttempts = 0;
+            this.reconnectTimer = null;
+            this.nativeAppId = options.nativeAppId ?? DEFAULT_NATIVE_APP_ID;
+        }
+        isAvailable() {
+            const b = getBrowser();
+            return (b?.runtime !== undefined &&
+                (typeof b.runtime.connect === 'function' || typeof b.runtime.sendNativeMessage === 'function'));
+        }
+        async connect() {
+            if (!this.isAvailable()) {
+                throw new Error('GeckoView WebExtension API not available');
+            }
+            this.setState('connecting');
+            try {
+                const b = getBrowser();
+                if (b?.runtime?.connect) {
+                    this.port = b.runtime.connect({ name: PORT_NAME });
+                    this.port.onMessage.addListener((message) => {
+                        this.handleMessage(message);
+                    });
+                    this.port.onDisconnect.addListener(() => {
+                        this.handleDisconnect();
+                    });
+                    this.setState('connected');
+                    this.reconnectAttempts = 0;
+                    this.flushQueue();
+                    log$2.debug('connected to background script');
+                }
+                else {
+                    // No persistent connection — `sendNativeMessage` only.
+                    this.setState('connected');
+                    log$2.debug('using sendNativeMessage mode (no persistent connection)');
+                }
+            }
+            catch (error) {
+                this.emitError(error);
+                throw error;
+            }
+        }
+        disconnect() {
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+            this.port = null;
+            this.messageQueue = [];
+            this.reconnectAttempts = 0;
+            this.setState('disconnected');
+            log$2.debug('disconnected');
+        }
+        send(message) {
+            const fullMessage = {
+                ...message,
+                timestamp: message.timestamp ?? Date.now(),
+            };
+            // Try persistent connection first.
+            if (this.port) {
+                try {
+                    this.port.postMessage(fullMessage);
+                    return true;
+                }
+                catch (error) {
+                    log$2.warn('port send failed, falling back', error);
+                    this.port = null;
+                }
+            }
+            // Fallback to sendNativeMessage.
+            const b = getBrowser();
+            if (b?.runtime?.sendNativeMessage) {
+                try {
+                    b.runtime.sendNativeMessage(this.nativeAppId, fullMessage);
+                    return true;
+                }
+                catch {
+                    this.queueMessage(fullMessage);
+                    return false;
+                }
+            }
+            // Not connected — queue.
+            this.queueMessage(fullMessage);
+            return false;
+        }
+        handleMessage(message) {
+            log$2.debug('message received', message?.type);
+            this.dispatchMessage(message);
+        }
+        handleDisconnect() {
+            log$2.debug('port disconnected');
+            this.port = null;
+            this.setState('disconnected');
+            if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                log$2.warn(`max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached — giving up`);
+                return;
+            }
+            this.reconnectAttempts++;
+            // Exponential backoff capped at MAX_RECONNECT_DELAY_MS.
+            const exponentialDelay = INITIAL_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1);
+            const cappedDelay = Math.min(exponentialDelay, MAX_RECONNECT_DELAY_MS);
+            log$2.debug(`reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${cappedDelay}ms`);
+            this.reconnectTimer = setTimeout(() => {
+                this.reconnectTimer = null;
+                this.connect().catch((error) => {
+                    log$2.warn('reconnect failed', error);
+                });
+            }, cappedDelay);
+        }
+        queueMessage(message) {
+            this.messageQueue.push(message);
+            if (this.messageQueue.length > MAX_QUEUE_SIZE) {
+                const dropped = this.messageQueue.shift();
+                log$2.debug('queue full, dropped oldest message', dropped?.type);
+            }
+        }
+        flushQueue() {
+            while (this.messageQueue.length > 0) {
+                const message = this.messageQueue.shift();
+                if (message) {
+                    this.send(message);
+                }
+            }
+        }
+    }
+
+    /**
+     * No-op Messaging Adapter
+     *
+     * A silent adapter for environments without native messaging support.
+     * All operations succeed silently without side effects.
+     *
+     * Use cases:
+     * - Standalone web pages without native host
+     * - Testing/development environments
+     * - Graceful degradation when native messaging unavailable
+     */
+    const log$1 = createLogger('Messaging');
+    /**
+     * No-op messaging adapter that silently accepts all messages.
+     */
+    class NoopMessagingAdapter extends BaseMessagingAdapter {
+        constructor(verbose = false) {
+            super();
+            this.id = 'noop';
+            this.name = 'No-op (Standalone)';
+            this._verbose = verbose;
+        }
+        isAvailable() {
+            // Always available as a fallback
+            return true;
+        }
+        async connect() {
+            this.setState('connected');
+            if (this._verbose) {
+                log$1.info('noop adapter connected (no-op mode)');
+            }
+        }
+        disconnect() {
+            this.setState('disconnected');
+            if (this._verbose) {
+                log$1.info('noop adapter disconnected');
+            }
+        }
+        send(message) {
+            if (this._verbose) {
+                log$1.debug('noop adapter message dropped', message.type);
+            }
+            return true;
+        }
+    }
+
+    /**
+     * GeckoView Spatial Navigation — content-script entry point.
+     *
+     * Orchestrates initialization of all spatial navigation modules. Loaded by the
+     * WebExtension manifest as a content script (`run_at: document_end`).
+     *
+     * Init pipeline (see {@link initSpatialNavigation}):
+     *   1. Load and validate user config
+     *   2. Build global state
+     *   3. Connect background-script port for native messaging
+     *   4. Install overlay + accessibility announcer
+     *   5. Discover focusables and attach observers
+     *   6. Attach keyboard handlers
+     *   7. Install WICG polyfill
+     *   8. Wire blur/visibility/exit listeners
      *
      * @see https://drafts.csswg.org/css-nav-1/
      * @see https://firefox-source-docs.mozilla.org/mobile/android/geckoview/consumer/web-extensions.html
      */
-    // Constants for DOM element IDs
+    const log = createLogger('Main');
     const STYLE_ID = 'spatnav-focus-styles';
     const OVERLAY_HOST_ID = 'spatnav-focus-host';
-    // Native app identifier for GeckoView messaging
-    const NATIVE_APP_ID = 'flutter_geckoview';
     const VERSION = '3.0.0';
-    // Background script port for connection-based messaging
-    let backgroundPort = null;
+    // Debounce window for the pageshow re-init handler. Below this threshold we
+    // treat consecutive events as the same logical navigation.
+    const PAGESHOW_DEBOUNCE_MS = 100;
+    let messagingAdapter = null;
     /**
-     * Connect to background script for native messaging relay.
+     * Connect to native layer via a MessagingAdapter.
+     *
+     * The adapter owns connection lifecycle, reconnect backoff, and the port
+     * abstraction. This function only wires response routing into the spatial
+     * navigation state.
      */
-    function connectToBackground(state) {
-        if (backgroundPort) {
-            return backgroundPort;
-        }
-        try {
-            if (typeof browser !== 'undefined' && browser?.runtime?.connect) {
-                backgroundPort = browser.runtime.connect({ name: 'spatial-nav-content' });
-                backgroundPort.onMessage.addListener((message) => {
-                    console.log(`[SpatialNav] Message from background: ${safeJson(message)}`);
-                    handleNativeResponse(message, state);
-                });
-                backgroundPort.onDisconnect.addListener(() => {
-                    console.log('[SpatialNav] Background port disconnected');
-                    backgroundPort = null;
-                });
-                console.log('[SpatialNav] Connected to background script');
-                return backgroundPort;
-            }
-        }
-        catch (e) {
-            console.log('[SpatialNav] Background connection not available:', e.message);
-        }
-        return null;
+    function connectMessaging(state) {
+        if (messagingAdapter)
+            return messagingAdapter;
+        // Pick an adapter based on which WebExtension bridge (if any) is available.
+        const adapter = typeof browser !== 'undefined' && browser?.runtime
+            ? new GeckoViewMessagingAdapter({ nativeAppId: state.config.nativeAppId })
+            : new NoopMessagingAdapter();
+        messagingAdapter = adapter;
+        adapter.onMessage((message) => handleNativeResponse(message, state));
+        adapter.connect().catch((e) => {
+            log.debug('native connection failed', e.message);
+        });
+        return adapter;
     }
     /**
-     * Handle responses from native layer (via background script).
+     * Handle responses from native layer.
      */
     function handleNativeResponse(message, state) {
         if (!message || !message.type)
             return;
         switch (message.type) {
-            case 'configUpdate':
-                if (message.config) {
-                    updateConfig(message.config);
-                    console.log(`[SpatialNav] Config updated from native: ${safeJson(message.config)}`);
+            case 'configUpdate': {
+                const cfg = message.config;
+                if (cfg) {
+                    // Re-validate any runtime config push from native to keep the
+                    // schema-validation guarantee end-to-end.
+                    const validated = validateUserConfig(cfg);
+                    Object.assign(state.config, validated);
+                    log.info('Config updated from native', validated);
                 }
                 break;
-            case 'navigate':
-                if (message.direction && directionByName[message.direction]) {
-                    moveInDirection(directionByName[message.direction], null, state);
+            }
+            case 'navigate': {
+                const dir = message.direction;
+                if (dir && directionByName[dir]) {
+                    moveInDirection(directionByName[dir], null, state);
                 }
                 break;
+            }
             case 'refresh':
                 refreshFocusables(state);
                 break;
             default:
-                console.log('[SpatialNav] Unknown message type:', message.type);
+                log.debug('Unknown message type', message.type);
         }
     }
     /**
-     * Send message to native layer via background script.
+     * Send a message to the native layer via the active messaging adapter.
      */
     function postToNative(message) {
-        if (backgroundPort) {
-            try {
-                backgroundPort.postMessage(message);
-                return true;
-            }
-            catch (e) {
-                console.warn('[SpatialNav] Failed to post to background:', e.message);
-                backgroundPort = null;
-            }
-        }
-        // Fallback to direct sendNativeMessage
-        try {
-            if (typeof browser !== 'undefined' && browser?.runtime?.sendNativeMessage) {
-                browser.runtime.sendNativeMessage(NATIVE_APP_ID, message);
-                return true;
-            }
-        }
-        catch {
-            // Silently fail
-        }
-        return false;
+        return messagingAdapter?.send(message) ?? false;
     }
-    // ============================================================================
-    // WICG Polyfill Installation
-    // ============================================================================
     /**
      * Install WICG-compatible APIs on global objects.
+     *
+     * Idempotent: each method is feature-detected, so existing browser-native
+     * implementations (or earlier polyfill installs) are not clobbered.
      */
     function installWICGPolyfill(state) {
-        // Skip if already installed
         if ('navigate' in window) {
             return;
         }
-        // window.navigate(dir)
         window.navigate = function (dir) {
             const direction = directionByName[dir];
             if (direction) {
                 moveInDirection(direction, null, state);
             }
         };
-        // Element.prototype.spatialNavigationSearch(dir, options)
         if (!Element.prototype.spatialNavigationSearch) {
-            Element.prototype.spatialNavigationSearch = function (dir, options = {}) {
+            Element.prototype.spatialNavigationSearch = function (dir, _options = {}) {
                 const direction = directionByName[dir];
                 if (!direction)
                     return null;
-                // Cast 'this' to HTMLElement because focusableElements contains HTMLElements
                 const el = this;
                 const index = state.focusableElements.indexOf(el);
                 if (index === -1)
                     return null;
                 const candidate = findDirectionalCandidate(index, direction, state);
-                if (!candidate && window.flutterSpatialNavDebug) {
-                    console.log(`[SpatialNav] spatialNavigationSearch: No candidate found for ${direction.name} from element`, el);
+                if (!candidate) {
+                    log.debug(`spatialNavigationSearch: no candidate for ${direction.name}`);
                 }
                 return candidate?.data.element ?? null;
             };
         }
-        // Element.prototype.focusableAreas(options)
         if (!Element.prototype.focusableAreas) {
             const selector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
             Element.prototype.focusableAreas = function (options = { mode: 'visible' }) {
-                // Explicitly cast the Array.from result to Element[]
                 const all = Array.from(this.querySelectorAll(selector));
                 if (options.mode === 'all')
                     return all;
-                return all.filter(el => {
+                return all.filter((el) => {
                     const style = window.getComputedStyle(el);
                     if (style.visibility === 'hidden' || style.display === 'none')
                         return false;
@@ -5146,90 +5591,131 @@ body *:focus, body *:focus-visible {
                 });
             };
         }
-        // Element.prototype.getSpatialNavigationContainer()
         if (!Element.prototype.getSpatialNavigationContainer) {
             Element.prototype.getSpatialNavigationContainer = function () {
-                let current = this;
-                while (current && current !== document.documentElement) {
-                    if (current.hasAttribute('data-focus-group'))
-                        return current;
-                    const style = window.getComputedStyle(current);
+                // Walk ancestors looking for an explicit focus group, a CSS-marked
+                // navigation container, or a scroll container. Falls back to the
+                // document root.
+                // eslint-disable-next-line @typescript-eslint/no-this-alias
+                let walker = this;
+                while (walker && walker !== document.documentElement) {
+                    if (walker.hasAttribute('data-focus-group'))
+                        return walker;
+                    const style = window.getComputedStyle(walker);
                     const overflow = (style.overflow + style.overflowX + style.overflowY).toLowerCase();
                     if (overflow.includes('auto') || overflow.includes('scroll'))
-                        return current;
-                    current = current.parentElement;
+                        return walker;
+                    walker = walker.parentElement;
                 }
                 return document.documentElement;
             };
         }
-        console.log('[SpatialNav] WICG polyfill installed');
+        log.debug('WICG polyfill installed');
     }
-    // Enable debug logging by default for development
-    window.flutterSpatialNavDebug = true;
-    // Initialize system when content script loads
-    // Manifest specifies "run_at": "document_end" so DOM is already ready
-    (function () {
-        // DEBUG: Track initialization attempts
-        window.__SPATIAL_NAV_INIT_COUNT__ = (window.__SPATIAL_NAV_INIT_COUNT__ || 0) + 1;
-        const initAttempt = window.__SPATIAL_NAV_INIT_COUNT__;
-        const initTime = Date.now();
-        console.log(`[SpatialNav DEBUG] ========== INIT ATTEMPT #${initAttempt} @ ${initTime} ==========`);
-        console.log(`[SpatialNav DEBUG] URL: ${location.href.substring(0, 100)}`);
-        console.log(`[SpatialNav DEBUG] readyState: ${document.readyState}`);
-        console.log(`[SpatialNav DEBUG] hasBody: ${!!document.body}`);
-        console.log(`[SpatialNav DEBUG] isTop: ${window === window.top}`);
-        console.log(`[SpatialNav DEBUG] data-spatnav-init: ${document.documentElement.getAttribute('data-spatnav-init')}`);
-        console.log(`[SpatialNav DEBUG] __SPATIAL_NAV_INIT_COMPLETE__: ${window.__SPATIAL_NAV_INIT_COMPLETE__}`);
-        console.log(`[SpatialNav DEBUG] __SPATIAL_NAV_HANDLERS_ATTACHED__: ${window.__SPATIAL_NAV_HANDLERS_ATTACHED__}`);
-        // Skip initialization in iframes - only run in top-level frame
-        // This prevents duplicate event handling and focus conflicts
-        // when analytics/tracking iframes also load the extension
-        if (window !== window.top) {
-            console.log(`[SpatialNav DEBUG] ❌ SKIPPING: iframe`);
-            console.log('[SpatialNav] Skipping iframe:', window.location.href.substring(0, 80));
+    /**
+     * Re-attach DOM-tied resources after a same-document SPA navigation.
+     *
+     * Why we need this: when GeckoView swaps the document during pageshow, the
+     * styles, overlay host, and observer instances are torn off the DOM, but the
+     * window-level event listeners survive. This rebuilds the DOM-side state in
+     * place rather than letting the page run with broken visuals.
+     */
+    function reinitializeAfterPageshow(state) {
+        const config = state.config;
+        const hasStyle = !!document.getElementById(STYLE_ID);
+        const hasOverlayHost = !!document.getElementById(OVERLAY_HOST_ID);
+        const overlayAttached = !!state.overlayHost && !!document.body && document.body.contains(state.overlayHost);
+        log.debug('pageshow audit', {
+            readyState: document.readyState,
+            hasStyle,
+            hasOverlayHost,
+            overlayAttached,
+            focusableCount: state.focusableCount,
+        });
+        const needsStyles = !hasStyle;
+        const needsOverlay = !hasOverlayHost || !overlayAttached;
+        if (!needsStyles && !needsOverlay) {
+            log.debug('pageshow: DOM intact, no re-init needed');
             return;
         }
-        // Skip initialization on transient/intermediate documents
-        // GeckoView creates multiple document states during navigation - only init on final document
-        // Detect transient state: about:blank, incomplete DOM, or readyState not complete
+        log.debug('pageshow: re-initializing', { needsStyles, needsOverlay });
+        if (needsOverlay) {
+            state.overlayHost = null;
+            state.overlay = null;
+        }
+        if (needsStyles) {
+            ensureStyles();
+        }
+        if (needsOverlay) {
+            ensureOverlay(config, state);
+        }
+        if (state.mutationObserver) {
+            state.mutationObserver.disconnect();
+            state.mutationObserver = null;
+        }
+        attachMutationObserver(state);
+        if (state.virtualSentinelObserver) {
+            state.virtualSentinelObserver.disconnect();
+            state.virtualSentinelObserver = null;
+        }
+        attachVirtualScrollSentinels(state);
+        refreshFocusables(state);
+        showOverlay(null, state);
+    }
+    /**
+     * Run the full initialization pipeline.
+     *
+     * Multiple init attempts can occur if GeckoView re-injects the content
+     * script: each call gets fresh state and a new handler ID. Stale handlers from
+     * prior injections short-circuit themselves via the DOM-level `data-spatnav-handler-id`
+     * attribute (see {@link ./navigation/handlers.ts}). That event-level guard is
+     * the dedup mechanism — we deliberately do **not** also gate at the init level,
+     * because past attempts to do so left stale handlers attached after navigation.
+     */
+    function initSpatialNavigation() {
+        // Bump the global init counter so the debug API can surface multi-injection issues.
+        window.__SPATIAL_NAV_INIT_COUNT__ = (window.__SPATIAL_NAV_INIT_COUNT__ || 0) + 1;
+        const initAttempt = window.__SPATIAL_NAV_INIT_COUNT__;
+        log.debug(`init attempt #${initAttempt}`, {
+            url: location.href.substring(0, 100),
+            readyState: document.readyState,
+            hasBody: !!document.body,
+            isTop: window === window.top,
+        });
+        // Skip iframes — only the top-level frame should host navigation, otherwise
+        // analytics/tracking iframes also load the extension and double-handle keys.
+        if (window !== window.top) {
+            log.debug('Skipping iframe', window.location.href.substring(0, 80));
+            return;
+        }
+        // GeckoView fires multiple document states during navigation. Wait for a
+        // real document with a body before initializing.
         if (location.href === 'about:blank') {
-            console.log(`[SpatialNav DEBUG] ❌ SKIPPING: about:blank`);
-            console.log('[SpatialNav] Skipping about:blank');
+            log.debug('Skipping about:blank');
             return;
         }
         if (document.readyState === 'loading' && !document.body) {
-            console.log(`[SpatialNav DEBUG] ❌ SKIPPING: loading without body`);
-            console.log('[SpatialNav] Skipping loading document without body');
+            log.debug('Skipping loading document without body');
             return;
         }
-        // Check existing initialization markers
-        const initMarker = document.documentElement.getAttribute('data-spatnav-init');
-        const windowFlag = window.__SPATIAL_NAV_INIT_COMPLETE__;
-        console.log(`[SpatialNav DEBUG] Existing markers: DOM="${initMarker}", window=${windowFlag}`);
-        // REMOVED: DOM and window guards were causing stale handlers
-        // Event-level deduplication (__spatnav_processed__) handles duplicate events
-        // Each init gets fresh state + handlers, old handlers become no-ops via event marker
-        console.log(`[SpatialNav DEBUG] ✅ PROCEEDING WITH INIT #${initAttempt} (guards disabled for debugging)`);
-        // Set markers for reference (not used as guards anymore)
         document.documentElement.setAttribute('data-spatnav-init', String(initAttempt));
         window.__SPATIAL_NAV_INIT_COMPLETE__ = true;
-        // 1. Load configuration
+        // 1. Load + validate configuration
         const config = getConfig();
         // 2. Initialize global state
         const state = getState(config);
         state.version = VERSION;
         state.runtime = detectRuntimeContext();
-        console.log(`[SpatialNav] Runtime mode: ${formatRuntimeLabel(state.runtime)} ${safeJson(state.runtime)}`);
-        // Log initialization to verify injection
-        console.log('[SpatialNav] init v' + state.version, location.href);
+        log.info(`runtime mode: ${formatRuntimeLabel(state.runtime)}`, state.runtime);
+        log.info(`init v${state.version}`, location.href);
         // 3. Connect to background script for native messaging
-        connectToBackground(state);
+        connectMessaging(state);
         // 4. Send native message to confirm initialization
         postToNative({
             type: 'spatialNavInit',
             version: state.version,
             url: location.href,
-            timestamp: Date.now()
+            timestamp: Date.now(),
         });
         // 5. Setup visual overlay
         ensureStyles();
@@ -5240,15 +5726,14 @@ body *:focus, body *:focus-visible {
         refreshFocusables(state);
         // 8. Attach virtual scroll sentinels
         attachVirtualScrollSentinels(state);
-        // Update initial instrumentation
         if (state.instrumentation) {
             const active = getActiveElement();
             state.instrumentation.lastActive = describeElement(active);
             state.instrumentation.activeIndex = state.currentIndex;
         }
-        // 9. Attach event handlers
-        // CRITICAL: Reset handlersAttached to force new handler with new ID
-        // The closure check in the handler will block old handlers from previous inits
+        // 9. Attach event handlers.
+        // Reset handlersAttached so a fresh handler ID supersedes any stale handler
+        // from a prior injection (see comment on initSpatialNavigation).
         state.handlersAttached = false;
         attachHandlers(state);
         // 10. Attach mutation observer
@@ -5257,19 +5742,17 @@ body *:focus, body *:focus-visible {
         initDebugApi(state);
         // 12. Install WICG polyfill
         installWICGPolyfill(state);
-        // 13. Expose public API (new names)
+        // 13. Expose public API
         window.spatialNavState = state;
         window.showSpatialNavOverlay = (element) => showOverlay(element, state);
-        // Legacy Flutter names (deprecated, for backwards compatibility)
-        window.flutterFocusState = state;
-        window.flutterShowOverlay = (element) => showOverlay(element, state);
-        // 14. Handle initial focus
-        // Don't auto-focus initial element - wait for user navigation from app
-        // This prevents ghost overlay from appearing before user enters web content
+        // 14. Install legacy aliases with deprecation warnings (removed in v4)
+        installLegacyDeprecations(state, (element) => showOverlay(element, state));
+        // 15. Don't auto-focus initial element — wait for user navigation from the
+        //     host app. Auto-focusing causes a ghost overlay before the user
+        //     enters web content.
         showOverlay(null, state);
-        // 15. Mark state as initialized
         state.initialized = true;
-        console.log('[SpatialNav] Initialization complete');
+        log.info('initialization complete');
         const suppressOverlay = (reason) => {
             state.overlaySuppressed = true;
             if (state.updateTimer) {
@@ -5278,114 +5761,29 @@ body *:focus, body *:focus-visible {
             }
             hideOverlay(state);
             hidePreviewElements(state);
-            if (window.flutterSpatialNavDebug) {
-                console.log(`[SpatialNav] Overlay suppressed (${reason})`);
-            }
+            log.debug(`overlay suppressed (${reason})`);
         };
         // 16. Hide overlay when focus leaves the document (e.g., returning to address bar)
-        // This ensures the focus indicator doesn't persist when the user exits web content
-        window.addEventListener('blur', () => {
-            console.log('[SpatialNav] Window blur - hiding overlay');
-            suppressOverlay('window.blur');
-        });
+        window.addEventListener('blur', () => suppressOverlay('window.blur'));
         document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                console.log('[SpatialNav] Document hidden - hiding overlay');
+            if (document.hidden)
                 suppressOverlay('document.hidden');
-            }
         });
-        // Note: focusout listener removed - it was causing click handling issues
-        // The window blur and visibilitychange handlers should suffice
-        // Hide overlay when spatial navigation exits to native UI (address bar)
-        // This event is dispatched when navigation reaches a boundary
-        document.addEventListener('spatialNavigationExit', (e) => {
-            console.log('[SpatialNav] Focus exiting web content - hiding overlay');
-            suppressOverlay('spatialNavigationExit');
-        });
-        // 16. Re-initialize on page navigation
-        // When user navigates to a new page (full document load), the old DOM is torn down
-        // (styles, overlay, observers), but event handlers on window survive.
-        // Re-run setup to ensure the new document works.
+        // Hide overlay when spatial navigation exits to native UI
+        document.addEventListener('spatialNavigationExit', () => suppressOverlay('spatialNavigationExit'));
+        // 17. Re-initialize on page navigation
         let lastPageshowTime = 0;
-        window.addEventListener('pageshow', function (event) {
-            // Debounce rapid pageshow events (can fire multiple times during navigation)
+        window.addEventListener('pageshow', () => {
             const now = Date.now();
-            if (now - lastPageshowTime < 100) {
-                console.log('[SpatialNav] pageshow debounced (too soon after last)');
+            if (now - lastPageshowTime < PAGESHOW_DEBOUNCE_MS) {
+                log.debug('pageshow debounced');
                 return;
             }
             lastPageshowTime = now;
-            // Detailed instrumentation for debugging
-            const hasStyle = !!document.getElementById(STYLE_ID);
-            const hasOverlayHost = !!document.getElementById(OVERLAY_HOST_ID);
-            const overlayAttached = state.overlayHost && document.body && document.body.contains(state.overlayHost);
-            console.log(`[SpatialNav] pageshow ${safeJson({
-            persisted: event.persisted,
-            readyState: document.readyState,
-            hasStyle: hasStyle,
-            hasOverlay: hasOverlayHost,
-            overlayAttached: overlayAttached,
-            overlayHostId: state.overlayHost?.id,
-            overlayConnected: !!state.overlayHost?.isConnected,
-            handlersAttached: state.handlersAttached,
-            focusableCount: state.focusableCount
-        })}`);
-            const needsStyles = !hasStyle;
-            const needsOverlay = !hasOverlayHost || !overlayAttached;
-            if (needsStyles || needsOverlay) {
-                console.log(`[SpatialNav] Re-initializing after navigation ${safeJson({
-                needsStyles,
-                needsOverlay
-            })}`);
-                // Force clear old overlay reference to avoid reuse
-                if (needsOverlay) {
-                    console.log('[SpatialNav] Clearing old overlay reference');
-                    state.overlayHost = null;
-                    state.overlay = null;
-                }
-                if (needsStyles) {
-                    ensureStyles();
-                    const styleNowExists = !!document.getElementById(STYLE_ID);
-                    console.log('[SpatialNav] ensureStyles complete, style exists:', styleNowExists);
-                }
-                if (needsOverlay) {
-                    ensureOverlay(config, state);
-                    const overlayNowExists = !!document.getElementById(OVERLAY_HOST_ID);
-                    const overlayNowAttached = state.overlayHost && document.body && document.body.contains(state.overlayHost);
-                    console.log(`[SpatialNav] ensureOverlay complete ${safeJson({
-                    overlayExists: overlayNowExists,
-                    overlayAttached: overlayNowAttached,
-                    overlayHostId: state.overlayHost?.id,
-                    overlayConnected: !!state.overlayHost?.isConnected
-                })}`);
-                }
-                // Re-attach mutation observer if needed
-                if (state.mutationObserver) {
-                    console.log('[SpatialNav] Disconnecting old mutation observer');
-                    state.mutationObserver.disconnect();
-                    state.mutationObserver = null;
-                }
-                attachMutationObserver(state);
-                console.log('[SpatialNav] Mutation observer re-attached');
-                // Re-attach virtual scroll sentinels
-                if (state.virtualSentinelObserver) {
-                    state.virtualSentinelObserver.disconnect();
-                    state.virtualSentinelObserver = null;
-                }
-                attachVirtualScrollSentinels(state);
-                console.log('[SpatialNav] Virtual scroll sentinels re-attached');
-                // Refresh focusables for new page
-                refreshFocusables(state);
-                console.log('[SpatialNav] refreshFocusables complete, count:', state.focusableCount);
-                // Hide overlay initially
-                showOverlay(null, state);
-                console.log('[SpatialNav] Re-initialization complete');
-            }
-            else {
-                console.log('[SpatialNav] No re-initialization needed, DOM intact');
-            }
+            reinitializeAfterPageshow(state);
         });
-    })();
+    }
+    initSpatialNavigation();
 
 })();
-//# sourceMappingURL=spatial-navigation.debug.js.map
+//# sourceMappingURL=spatial_navigation.debug.js.map

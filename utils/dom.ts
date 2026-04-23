@@ -5,13 +5,20 @@
  * Features Shadow DOM traversal, virtual scroll detection, and accessibility announcer.
  */
 
-import { updateEntryGeometry, isRectVisible } from '../core/geometry';
+import { updateEntryGeometry } from '../core/geometry';
 import { FocusGroup, parseFocusGroupAttribute, findFocusGroupContainer } from '../core/focus_group';
 import { syncIntersectionObserver, observeNewElement, unobserveElement } from './intersection';
+import { createLogger } from './logger';
 import type { SpatialNavConfig } from '../core/config';
 import type { SpatialNavState, FocusableEntry } from '../core/state';
 
-const focusableSelector = 'a[href], a[aria-haspopup], [role="link"], button:not([disabled]), [role="button"], [aria-haspopup="true"], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+const log = createLogger('DOM');
+
+/** Threshold above which a focusable refresh is logged as slow (ms). */
+const SLOW_REFRESH_THRESHOLD_MS = 50;
+
+const focusableSelector =
+    'a[href], a[aria-haspopup], [role="link"], button:not([disabled]), [role="button"], [aria-haspopup="true"], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
 
 // ===== Shadow DOM Traversal =====
 
@@ -42,7 +49,8 @@ function findFocusablesDeep(
     if (visited.has(root)) {
         return results;
     }
-    if (root.nodeType === 11) { // ShadowRoot
+    if (root.nodeType === 11) {
+        // ShadowRoot
         visited.add(root);
     }
 
@@ -75,7 +83,7 @@ function findFocusablesDeep(
             }
         }
     } catch (e) {
-        console.warn('[SpatialNav] Shadow DOM traversal error:', e);
+        log.warn('shadow DOM traversal error', e);
     }
 
     // Flatten slot assignments (distributed content)
@@ -160,33 +168,35 @@ export function attachVirtualScrollSentinels(state: SpatialNavState): void {
         return;
     }
 
-    // console.log('[SpatialNav] Detected', containers.length, 'virtual scroll containers');
+    log.debug(`detected ${containers.length} virtual scroll containers`);
 
     const debounceMs = config.virtualScrollDebounce || 150;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const observer = new IntersectionObserver((entries) => {
-        const shouldRefresh = entries.some(entry => entry.isIntersecting);
+    const observer = new IntersectionObserver(
+        (entries) => {
+            const shouldRefresh = entries.some((entry) => entry.isIntersecting);
 
-        if (shouldRefresh && !state.virtualScrollPending) {
-            state.virtualScrollPending = true;
+            if (shouldRefresh && !state.virtualScrollPending) {
+                state.virtualScrollPending = true;
 
-            if (debounceTimer) {
-                clearTimeout(debounceTimer);
+                if (debounceTimer) {
+                    clearTimeout(debounceTimer);
+                }
+
+                debounceTimer = setTimeout(() => {
+                    log.debug('virtual scroll sentinel triggered refresh');
+                    refreshFocusables(state);
+                    state.virtualScrollPending = false;
+                    state.dirty = true; // Invalidate precomputed cache
+                }, debounceMs);
             }
-
-            debounceTimer = setTimeout(() => {
-                // console.log('[SpatialNav] Virtual scroll sentinel triggered refresh');
-                // Import dynamically to avoid circular dependency
-                refreshFocusables(state);
-                state.virtualScrollPending = false;
-                state.dirty = true;  // Invalidate precomputed cache
-            }, debounceMs);
+        },
+        {
+            rootMargin: '300px',
+            threshold: 0,
         }
-    }, {
-        rootMargin: '300px',
-        threshold: 0
-    });
+    );
 
     // Observe sentinel elements (first and last visible children)
     for (const container of containers) {
@@ -239,7 +249,7 @@ export function setupAccessibilityAnnouncer(state: SpatialNavState): void {
             'white-space: nowrap !important;' +
             'border: 0 !important;';
         document.body.appendChild(announcer);
-        // console.log('[SpatialNav] Accessibility announcer created');
+        log.debug('accessibility announcer created');
     }
 
     state.announcer = announcer;
@@ -252,7 +262,11 @@ export function setupAccessibilityAnnouncer(state: SpatialNavState): void {
  * @param state - Global state object
  * @param priority - 'polite' or 'assertive'
  */
-export function announce(message: string, state: SpatialNavState, priority: 'polite' | 'assertive' = 'polite'): void {
+export function announce(
+    message: string,
+    state: SpatialNavState,
+    priority: 'polite' | 'assertive' = 'polite'
+): void {
     const config = state.config;
     if (!config.enableAria || !state.announcer) {
         return;
@@ -310,13 +324,13 @@ export function getAccessibleDescription(el: HTMLElement, config: Partial<Spatia
     // Add role information
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
     const roleNames: Record<string, string> = {
-        'a': 'link',
-        'button': 'button',
-        'input': (el as HTMLInputElement).type || 'text field',
-        'select': 'dropdown',
-        'textarea': 'text area',
-        'checkbox': 'checkbox',
-        'radio': 'radio button'
+        a: 'link',
+        button: 'button',
+        input: (el as HTMLInputElement).type || 'text field',
+        select: 'dropdown',
+        textarea: 'text area',
+        checkbox: 'checkbox',
+        radio: 'radio button',
     };
     const roleName = roleNames[role] || role;
 
@@ -369,33 +383,33 @@ export function describeElement(el: Element | null): string {
  * @param state - Global state object
  */
 export function refreshFocusables(state: SpatialNavState): void {
-    const startTime = performance.now();  // TODO 4: Performance monitoring
+    const startTime = performance.now(); // TODO 4: Performance monitoring
     const config = state.config;
 
     // Use Shadow DOM traversal if enabled, otherwise standard querySelectorAll
     let nodes: HTMLElement[];
     if (config.traverseShadowDom) {
         nodes = findFocusablesDeep(document, config);
-        // console.log('[SpatialNav] Shadow DOM traversal found', nodes.length, 'focusables');
+        log.debug(`shadow DOM traversal found ${nodes.length} focusables`);
     } else {
         nodes = Array.from(document.querySelectorAll(focusableSelector)) as HTMLElement[];
     }
 
-    if ((window as any).flutterSpatialNavDebug) {
-        console.log(`[SpatialNav] Candidate nodes found: ${nodes.length}`);
-    }
+    log.debug(`candidate nodes found: ${nodes.length}`);
 
     // Add iframes if iframe support is enabled
     if (config.iframeSupport && config.iframeSupport.enabled) {
         try {
-            const iframeNodes = Array.from(document.querySelectorAll(config.iframeSupport.selector || 'iframe')) as HTMLElement[];
+            const iframeNodes = Array.from(
+                document.querySelectorAll(config.iframeSupport.selector || 'iframe')
+            ) as HTMLElement[];
             iframeNodes.forEach((iframe) => {
                 if (!nodes.includes(iframe)) {
                     nodes.push(iframe);
                 }
             });
         } catch (err) {
-            console.warn('[SpatialNav] iframe selector failed:', err);
+            log.warn('iframe selector failed', err);
         }
     }
     const results: FocusableEntry[] = [];
@@ -408,65 +422,43 @@ export function refreshFocusables(state: SpatialNavState): void {
 
     for (let i = 0; i < nodes.length; i++) {
         const el = nodes[i];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (!el || typeof (el as any).getBoundingClientRect !== 'function') {
+        if (!el || typeof (el as HTMLElement).getBoundingClientRect !== 'function') {
             continue;
         }
         const style = window.getComputedStyle(el);
-        if (!style || style.visibility === 'hidden' || style.display === 'none' || (el as HTMLButtonElement).disabled) {
-            /*
-            if ((window as any).flutterSpatialNavDebug) {
-                console.log(`[SpatialNav] Skipping hidden/disabled element: ${describeElement(el as HTMLElement)} (vis=${style?.visibility}, display=${style?.display}, disabled=${(el as any).disabled})`);
-            }
-            */
+        if (
+            !style ||
+            style.visibility === 'hidden' ||
+            style.display === 'none' ||
+            (el as HTMLButtonElement).disabled
+        ) {
             continue;
         }
         const entry: FocusableEntry = {
             element: el,
-            index: i // Temporary index, will be fixed in results array
+            index: i,
         } as FocusableEntry;
 
         updateEntryGeometry(entry, state);
-        // Skip tiny elements based on configuration
         const minSize = state.config.minElementSize || 1;
-        if (!entry.rect || entry.width <= 1 || entry.height <= 1 || entry.width < minSize || entry.height < minSize) {
-            /*
-            if ((window as any).flutterSpatialNavDebug) {
-                console.log(`[SpatialNav] Skipping tiny/invalid element: ${describeElement(el as HTMLElement)} (width: ${entry.width}, height: ${entry.height})`);
-            }
-            */
+        if (
+            !entry.rect ||
+            entry.width <= 1 ||
+            entry.height <= 1 ||
+            entry.width < minSize ||
+            entry.height < minSize
+        ) {
             continue;
-        }
-
-        if ((window as any).flutterSpatialNavDebug && results.length < 50) {
-            /*
-            // Log first 50 items to avoid flooding the log
-            console.log(`[SpatialNav] Registered focusable #${results.length}: ${describeElement(el as HTMLElement)} at [${entry.left.toFixed(1)}, ${entry.top.toFixed(1)}] size [${entry.width.toFixed(1)}x${entry.height.toFixed(1)}]`);
-            */
         }
 
         const ariaHidden = el.closest('[aria-hidden="true"]');
         if (ariaHidden) {
-            /*
-            if ((window as any).flutterSpatialNavDebug) {
-                console.log(`[SpatialNav] Skipping aria-hidden element: ${describeElement(el as HTMLElement)} (inside ${describeElement(ariaHidden as HTMLElement)})`);
-            }
-            */
-            // Remove from results if we already added it (we shouldn't have)
             continue;
         }
 
-        // Visible in viewport check
-        if (!isRectVisible(entry.rect, 0)) {
-            /*
-            if ((window as any).flutterSpatialNavDebug) {
-                console.log(`[SpatialNav] Skipping off-screen element: ${describeElement(el as HTMLElement)} at [${entry.left.toFixed(1)}, ${entry.top.toFixed(1)}]`);
-            }
-            */
-            // Many apps have legitimate off-screen items, but keep them for now
-            // or filter them if you want strict viewport navigation.
-            // Our system usually allows navigation to off-screen elements if they are in candidates.
-        }
+        // Off-screen elements remain in the candidate list — many apps host
+        // legitimate off-screen content (carousels, virtual lists). The
+        // scorer applies an OFFSCREEN_PENALTY rather than excluding them.
 
         // Focus Group Logic
         const groupContainer = findFocusGroupContainer(el);
@@ -497,7 +489,7 @@ export function refreshFocusables(state: SpatialNavState): void {
     });
 
     state.focusables = results;
-    state.focusableElements = results.map(item => item.element as HTMLElement);
+    state.focusableElements = results.map((item) => item.element as HTMLElement);
     state.focusableCount = results.length;
     state.currentIndex = state.focusableElements.indexOf(document.activeElement as HTMLElement);
 
@@ -522,9 +514,9 @@ export function refreshFocusables(state: SpatialNavState): void {
         state.perf.averageRefreshTime = state.perf.totalRefreshTime / state.perf.refreshCount;
         state.perf.lastRefreshTime = duration;
 
-        if (duration > 50) {
+        if (duration > SLOW_REFRESH_THRESHOLD_MS) {
             state.perf.slowRefreshCount++;
-            console.warn(`[SpatialNav] Slow refresh: ${duration.toFixed(2)}ms (${results.length} elements)`);
+            log.warn(`slow refresh: ${duration.toFixed(2)}ms (${results.length} elements)`);
         }
     }
 }
@@ -539,17 +531,31 @@ export function refreshFocusables(state: SpatialNavState): void {
 export function simulatePointerEvents(oldEl: Element | null, newEl: Element | null): void {
     if (oldEl) {
         try {
-            oldEl.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, cancelable: true, view: window }));
-            oldEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, cancelable: false, view: window }));
-        } catch { /* ignore */ }
+            oldEl.dispatchEvent(
+                new MouseEvent('mouseout', { bubbles: true, cancelable: true, view: window })
+            );
+            oldEl.dispatchEvent(
+                new MouseEvent('mouseleave', { bubbles: false, cancelable: false, view: window })
+            );
+        } catch {
+            /* ignore */
+        }
     }
     if (newEl) {
         try {
-            newEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-            newEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false, cancelable: false, view: window }));
+            newEl.dispatchEvent(
+                new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window })
+            );
+            newEl.dispatchEvent(
+                new MouseEvent('mouseenter', { bubbles: false, cancelable: false, view: window })
+            );
             // Some sites might need mousemove to trigger tooltips
-            newEl.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window }));
-        } catch { /* ignore */ }
+            newEl.dispatchEvent(
+                new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window })
+            );
+        } catch {
+            /* ignore */
+        }
     }
 }
 
@@ -598,7 +604,12 @@ export function insertEntry(el: Element, state: SpatialNavState): void {
     }
 
     const style = window.getComputedStyle(el);
-    if (!style || style.visibility === 'hidden' || style.display === 'none' || (el as HTMLButtonElement).disabled) {
+    if (
+        !style ||
+        style.visibility === 'hidden' ||
+        style.display === 'none' ||
+        (el as HTMLButtonElement).disabled
+    ) {
         return;
     }
 
@@ -626,12 +637,11 @@ export function insertEntry(el: Element, state: SpatialNavState): void {
     state.focusableElements.push(el as HTMLElement);
 
     // Re-index all entries
-    state.focusables.forEach((e, i) => e.index = i);
+    state.focusables.forEach((e, i) => (e.index = i));
     state.focusableCount = state.focusables.length;
 
     observeNewElement(state, el);
-
-    // console.log('[SpatialNav] Inserted entry:', describeElement(el));
+    log.debug('inserted entry', describeElement(el));
 }
 
 /**
@@ -647,7 +657,7 @@ export function removeEntry(idx: number, state: SpatialNavState): void {
     }
 
     const entry = state.focusables[idx];
-    // console.log('[SpatialNav] Removing entry:', describeElement(entry.element));
+    log.debug('removing entry', describeElement(entry.element));
 
     // Remove from focus group
     if (entry.groupId) {
@@ -665,7 +675,7 @@ export function removeEntry(idx: number, state: SpatialNavState): void {
     }
 
     // Re-index
-    state.focusables.forEach((e, i) => e.index = i);
+    state.focusables.forEach((e, i) => (e.index = i));
     state.focusableCount = state.focusables.length;
 
     // Update currentIndex if needed
@@ -718,5 +728,5 @@ export function refreshAttributes(state: SpatialNavState, mutationList: Mutation
         }
     }
 
-    // console.log('[SpatialNav] Incremental refresh complete:', state.focusables.length, 'focusables');
+    log.debug(`incremental refresh complete: ${state.focusables.length} focusables`);
 }

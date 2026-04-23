@@ -10,7 +10,7 @@ import type { Direction, DirectionMap } from './config';
 import type { NavigationCandidate, ScoringOptions } from './scoring';
 
 const previewDirectionKeys = ['up', 'down', 'left', 'right'] as const;
-type PreviewDirection = typeof previewDirectionKeys[number];
+type PreviewDirection = (typeof previewDirectionKeys)[number];
 
 interface PreviewElement {
     container: HTMLElement;
@@ -50,7 +50,7 @@ export function ensurePreviewElements(state: SpatialNavState): PreviewElements |
             state.previewLayer!.appendChild(container);
             elements[direction] = {
                 container: container,
-                arrow: arrow
+                arrow: arrow,
             };
         });
         state.previewElements = elements;
@@ -94,7 +94,10 @@ function showDisabledPreview(entry: PreviewElement, direction: string, currentRe
     if (!entry || !entry.container || !currentRect) {
         return;
     }
-    const size = Math.max(16, Math.min(32, Math.round(Math.min(currentRect.width, currentRect.height) * 0.35)));
+    const size = Math.max(
+        16,
+        Math.min(32, Math.round(Math.min(currentRect.width, currentRect.height) * 0.35))
+    );
     const offset = Math.max(8, Math.round(size * 0.6));
     let left = currentRect.left;
     let top = currentRect.top;
@@ -146,7 +149,10 @@ function showChevronPreview(
         return;
     }
 
-    const size = Math.max(14, Math.min(26, Math.round(Math.min(currentRect.width, currentRect.height) * 0.28)));
+    const size = Math.max(
+        14,
+        Math.min(26, Math.round(Math.min(currentRect.width, currentRect.height) * 0.28))
+    );
     const offset = Math.max(10, Math.round(size * 0.75));
 
     let left = currentRect.left;
@@ -197,7 +203,11 @@ function showChevronPreview(
  * @param currentRect - Current element rect
  * @param state - Global state object
  */
-export function triggerNoTargetAnimation(direction: string, currentRect: DOMRect | null, state: SpatialNavState): void {
+export function triggerNoTargetAnimation(
+    direction: string,
+    currentRect: DOMRect | null,
+    state: SpatialNavState
+): void {
     // Basic direction validation
     if (!direction || !previewDirectionKeys.includes(direction as PreviewDirection)) {
         return;
@@ -271,12 +281,6 @@ export function updatePreviewTargets(
         result[direction] = findDirectionalCandidate(currentIndex, dir, state);
     });
     state.nextTargets = result;
-
-    if ((window as any).flutterSpatialNavDebug) {
-        const desc = (c: NavigationCandidate | null) => c?.data?.element ? (c.data.element.tagName.toLowerCase() + (c.data.element.id ? '#' + c.data.element.id : '') + (c.data.element.textContent ? ` ("${c.data.element.textContent.trim().substring(0, 15)}")` : '')) : 'null';
-        // console.log(`[SpatialNav] Targets for focus #${currentIndex}: UP=${desc(result.up)}, DOWN=${desc(result.down)}, LEFT=${desc(result.left)}, RIGHT=${desc(result.right)}`);
-    }
-
     return result;
 }
 
@@ -315,7 +319,12 @@ export function updatePreviewVisuals(
             ? currentRect
             : currentElement.getBoundingClientRect();
 
-    const targets = updatePreviewTargets(state.currentIndex, findDirectionalCandidate, directionByName, state);
+    const targets = updatePreviewTargets(
+        state.currentIndex,
+        findDirectionalCandidate,
+        directionByName,
+        state
+    );
 
     previewDirectionKeys.forEach(function (direction) {
         const entry = elements[direction];

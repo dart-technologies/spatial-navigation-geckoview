@@ -7,8 +7,10 @@
 
 import type { SpatialNavConfig, DirectionName } from './config';
 import type { NavigationCandidate } from './scoring';
+// Type-only import — runtime cycle avoided because TypeScript erases this.
+import type { FocusGroup as FocusGroupClass } from './focus_group';
 
-// Forward declarations for types from other modules (to avoid circular deps)
+// Forward declaration to avoid circular runtime deps with focus_group.ts.
 export interface FocusableEntry {
     element: HTMLElement;
     rect: DOMRect | null;
@@ -25,19 +27,12 @@ export interface FocusableEntry {
     index: number;
 }
 
-export interface FocusGroup {
-    id: string;
-    members: FocusableEntry[];
-    lastFocused: FocusableEntry | null;
-    options: {
-        boundary: 'exit' | 'contain' | 'wrap' | 'stop';
-        enterMode: 'default' | 'first' | 'last';
-        rememberLast: boolean;
-    };
-    addMember(entry: FocusableEntry): void;
-    removeMember(entry: FocusableEntry): void;
-    updateLastFocused(entry: FocusableEntry): void;
-}
+/**
+ * Re-exports the canonical FocusGroup class type from focus_group.ts.
+ * Kept as a type alias here so state-shape consumers don't need to know
+ * about the concrete class location.
+ */
+export type FocusGroup = FocusGroupClass;
 
 export interface PreviewElement {
     container: HTMLElement;
@@ -102,7 +97,7 @@ export interface FocusPositionHint {
     centerY: number;
     top: number;
     left: number;
-    elementDesc: string;  // describeElement() output for logging
+    elementDesc: string; // describeElement() output for logging
     timestamp: number;
 }
 
@@ -141,7 +136,7 @@ export interface SpatialNavState {
     nextTargets: Record<DirectionName, NavigationCandidate | null>;
     noTargetTimers: Partial<Record<DirectionName, ReturnType<typeof setTimeout> | null>>;
     lastFocusedElement: HTMLElement | null;
-    lastFocusPosition: FocusPositionHint | null;  // Position hint for recovery
+    lastFocusPosition: FocusPositionHint | null; // Position hint for recovery
     lastMove: {
         fromIndex: number;
         toIndex: number;
@@ -206,7 +201,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
     // Reuse existing state if available (SPA navigation)
     // Support both new and legacy names
     const existingState = window.spatialNavState || window.flutterFocusState;
-    const state: SpatialNavState = existingState || {} as SpatialNavState;
+    const state: SpatialNavState = existingState || ({} as SpatialNavState);
 
     // Persist to both names for compatibility
     window.spatialNavState = state;
@@ -267,7 +262,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
         activeIndex: -1,
         lastMismatch: null,
         lastUpdate: 0,
-        lastDirection: ''
+        lastDirection: '',
     };
 
     // Performance monitoring
@@ -276,7 +271,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
         totalRefreshTime: 0,
         averageRefreshTime: 0,
         lastRefreshTime: 0,
-        slowRefreshCount: 0
+        slowRefreshCount: 0,
     };
 
     // Virtual scroll / infinite list state
@@ -316,11 +311,13 @@ export function resetState(): void {
 /**
  * Export instrumentation data for debugging.
  */
-export function getInstrumentation(): (Instrumentation & {
-    focusablesCount: number;
-    currentIndex: number;
-    version: string;
-}) | null {
+export function getInstrumentation():
+    | (Instrumentation & {
+          focusablesCount: number;
+          currentIndex: number;
+          version: string;
+      })
+    | null {
     const state = window.spatialNavState || window.flutterFocusState;
     if (!state) return null;
 

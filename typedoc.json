@@ -1,0 +1,22 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["main.ts", "core/index.ts", "messaging/index.ts", "globals.d.ts"],
+  "out": "docs/api",
+  "tsconfig": "tsconfig.json",
+  "name": "Spatial Navigation for GeckoView",
+  "readme": "README.md",
+  "includeVersion": true,
+  "excludePrivate": false,
+  "excludeProtected": false,
+  "excludeInternal": false,
+  "categorizeByGroup": true,
+  "navigationLinks": {
+    "GitHub": "https://github.com/dart-technologies/spatial-navigation-geckoview",
+    "CHANGELOG": "https://github.com/dart-technologies/spatial-navigation-geckoview/blob/main/CHANGELOG.md"
+  },
+  "validation": {
+    "notExported": false,
+    "invalidLink": true,
+    "notDocumented": false
+  }
+}

@@ -110,7 +110,7 @@ export const GroupPath = {
     leaf(id: string): string {
         const lastDot = id.lastIndexOf('.');
         return lastDot > 0 ? id.substring(lastDot + 1) : id;
-    }
+    },
 };
 
 /**
@@ -143,7 +143,7 @@ export class FocusGroup {
             enterMode: options.enterMode || 'default',
             priority: options.priority ?? 0,
             inheritOptions: options.inheritOptions !== false,
-            ...options
+            ...options,
         };
         this.lastFocused = null;
         this._depth = GroupPath.depth(id);
@@ -184,7 +184,7 @@ export class FocusGroup {
             ...parentOptions,
             ...this.options,
             // Don't inherit ID-specific options
-            priority: this.options.priority
+            priority: this.options.priority,
         };
     }
 
@@ -232,8 +232,8 @@ export class FocusGroup {
             while (ancestor) {
                 if (!ancestor.lastFocused || !document.body.contains(ancestor.lastFocused.element)) {
                     // Find the member in ancestor that contains this entry
-                    const memberInAncestor = ancestor.members.find(m =>
-                        m.element.contains(entry.element) || m.element === entry.element
+                    const memberInAncestor = ancestor.members.find(
+                        (m) => m.element.contains(entry.element) || m.element === entry.element
                     );
                     if (memberInAncestor) {
                         ancestor.lastFocused = memberInAncestor;
@@ -247,7 +247,11 @@ export class FocusGroup {
     getPreferredEntry(): FocusableEntry | undefined {
         const effectiveOptions = this.getEffectiveOptions();
 
-        if (effectiveOptions.enterMode === 'last' && this.lastFocused && document.body.contains(this.lastFocused.element)) {
+        if (
+            effectiveOptions.enterMode === 'last' &&
+            this.lastFocused &&
+            document.body.contains(this.lastFocused.element)
+        ) {
             return this.lastFocused;
         }
 
@@ -336,8 +340,8 @@ export function parseFocusGroupAttribute(attrValue: string | null): ParsedFocusG
     const options: Record<string, unknown> = {};
 
     if (parts.length > 1) {
-        parts.slice(1).forEach(part => {
-            const [key, value] = part.split('=').map(s => s.trim());
+        parts.slice(1).forEach((part) => {
+            const [key, value] = part.split('=').map((s) => s.trim());
             if (key && value) {
                 if (value === 'true') options[key] = true;
                 else if (value === 'false') options[key] = false;

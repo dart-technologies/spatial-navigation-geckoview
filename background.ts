@@ -1,52 +1,68 @@
 /**
- * Background script for Spatial Navigation Extension
- * 
- * Acts as a bridge between Content Script and Native Layer.
- * Required because direct nativeMessaging from content scripts can be unreliable
- * or restricted in some GeckoView configurations.
+ * Background script for the Spatial Navigation extension.
+ *
+ * Acts as a bridge between the content script and the native layer. We need
+ * this relay because direct `nativeMessaging` from content scripts can be
+ * unreliable or restricted in some GeckoView configurations.
  */
 
-/// <reference path="./globals.d.ts" />
-
-// console.log('[SpatialNav-BG] Background script loaded');
-
 import { safeJson } from './utils/json';
+import { createLogger } from './utils/logger';
+import type { BrowserRuntime } from './globals';
+
+const log = createLogger('Background');
+
+/** Native app identifier — must match the value registered in the host. */
+const NATIVE_APP_ID = 'flutter_geckoview';
+
+interface SendResponse {
+    (response: { success: boolean; nativeUser?: unknown; error?: string }): void;
+}
 
 try {
-    (browser.runtime as any).onMessage.addListener((message: any, sender: any, sendResponse: (response: any) => void) => {
-        console.log(`[SpatialNav-BG] Received message: ${safeJson(message)}`);
+    const runtime = browser?.runtime as BrowserRuntime | undefined;
+    if (!runtime?.onMessage?.addListener) {
+        log.warn('browser.runtime.onMessage unavailable — background relay inert');
+    } else {
+        runtime.onMessage.addListener((message: unknown, _sender: unknown, sendResponse: SendResponse) => {
+            log.debug(`received message: ${safeJson(message)}`);
 
-        // Forward ALL messages to Native Layer
-        // Native App ID must match what is registered in Kotlin ('flutter_geckoview')
-        try {
-            const nativeApi = (browser.runtime as any).sendNativeMessage;
-            if (typeof nativeApi !== 'function') {
-                console.error('[SpatialNav-BG] sendNativeMessage unavailable on browser.runtime');
-                sendResponse({ success: false, error: 'sendNativeMessage unavailable' });
-                return true;
+            try {
+                const sendNative = runtime.sendNativeMessage;
+                if (typeof sendNative !== 'function') {
+                    log.error('sendNativeMessage unavailable on browser.runtime');
+                    sendResponse({ success: false, error: 'sendNativeMessage unavailable' });
+                    return true;
+                }
+
+                sendNative(NATIVE_APP_ID, message)
+                    .then((response: unknown) => {
+                        log.debug(`native response: ${safeJson(response)}`);
+                        sendResponse({ success: true, nativeUser: response });
+                    })
+                    .catch((error: unknown) => {
+                        const messageText =
+                            error instanceof Error
+                                ? `${error.name}: ${error.message}`
+                                : typeof (error as { message?: string })?.message === 'string'
+                                  ? (error as { message: string }).message
+                                  : String(error);
+                        log.error(`native relay error: ${messageText}`, error);
+                        sendResponse({
+                            success: false,
+                            error: (error as { message?: string })?.message || String(error),
+                        });
+                    });
+            } catch (e) {
+                log.error('exception relaying to native', e);
+                sendResponse({ success: false, error: (e as Error)?.message || String(e) });
             }
 
-            nativeApi('flutter_geckoview', message)
-                .then((response: any) => {
-                    console.log(`[SpatialNav-BG] Native response: ${safeJson(response)}`);
-                    sendResponse({ success: true, nativeUser: response });
-                })
-                .catch((error: any) => {
-                    const messageText = (error instanceof Error)
-                        ? `${error.name}: ${error.message}`
-                        : (typeof error?.message === 'string' ? error.message : String(error));
-                    console.error(`[SpatialNav-BG] Native relay error: ${messageText} ${safeJson(error)}`);
-                    sendResponse({ success: false, error: error?.message || error });
-                });
-        } catch (e) {
-            console.error(`[SpatialNav-BG] Exception relaying to native: ${safeJson(e)}`);
-            sendResponse({ success: false, error: (e as any)?.message || String(e) });
-        }
-
-        // Return true to indicate we will sendResponse asynchronously
-        return true;
-    });
-    // console.log('[SpatialNav-BG] Registered generic onMessage relay listener');
+            // Returning true keeps the channel open for the async sendResponse.
+            return true;
+        });
+        log.debug('background relay listener registered');
+    }
 } catch (e) {
-    console.error('[SpatialNav-BG] Error registering relay listener:', e);
+    log.error('error registering relay listener', e);
 }

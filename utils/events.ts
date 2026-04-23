@@ -32,7 +32,7 @@ export function dispatchNavEvent(type: string, target: Element, details: NavEven
     // Build detail payload with all provided fields
     const detail: NavEventDetails = {
         dir: details.dir,
-        relatedTarget: details.relatedTarget || null
+        relatedTarget: details.relatedTarget || null,
     };
 
     // Forward focus-trap metadata for navnotarget events
@@ -52,21 +52,8 @@ export function dispatchNavEvent(type: string, target: Element, details: NavEven
     const event = new CustomEvent(type, {
         bubbles: true,
         cancelable: true,
-        detail: detail
+        detail: detail,
     });
 
-    const result = target.dispatchEvent(event);
-
-    // Log for debugging
-    /*
-    console.log(`[SpatialNav] ${type} event dispatched:`, {
-        target: target.tagName + (target.id ? '#' + target.id : ''),
-        dir: details.dir,
-        inTrap: detail.inTrap,
-        escapeKey: detail.escapeKey,
-        defaultPrevented: !result
-    });
-    */
-
-    return result;
+    return target.dispatchEvent(event);
 }

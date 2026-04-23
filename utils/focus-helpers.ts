@@ -51,7 +51,9 @@ export function scheduleOverlayUpdate(target: HTMLElement, state: SpatialNavStat
         if (state.instrumentation) {
             state.instrumentation.lastActive = describeElement(target) || 'EMPTY_DESC';
             state.instrumentation.lastOverlay = describeElement(target);
-            state.instrumentation.activeIndex = state.focusableElements ? state.focusableElements.indexOf(target) : -1;
+            state.instrumentation.activeIndex = state.focusableElements
+                ? state.focusableElements.indexOf(target)
+                : -1;
             state.instrumentation.lastUpdate = Date.now();
         }
         if (target && target.nodeType === 1) {
@@ -91,11 +93,13 @@ export function storePositionHint(state: SpatialNavState): void {
         top: entry.top,
         left: entry.left,
         elementDesc: describeElement(active),
-        timestamp: Date.now()
+        timestamp: Date.now(),
     } as FocusPositionHint;
 
     if (DEBUG) {
-        log.debug(`Stored position hint: ${state.lastFocusPosition.elementDesc} at (${entry.centerX.toFixed(0)}, ${entry.centerY.toFixed(0)})`);
+        log.debug(
+            `Stored position hint: ${state.lastFocusPosition.elementDesc} at (${entry.centerX.toFixed(0)}, ${entry.centerY.toFixed(0)})`
+        );
     }
 }
 

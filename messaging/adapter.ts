@@ -14,8 +14,11 @@ import type {
     InboundMessage,
     MessageCallback,
     ConnectionState,
-    MessagingEvents
+    MessagingEvents,
 } from './types';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('Messaging');
 
 /**
  * Abstract messaging adapter interface.
@@ -116,7 +119,7 @@ export abstract class BaseMessagingAdapter implements MessagingAdapter {
             try {
                 callback(message);
             } catch (error) {
-                console.error('[MessagingAdapter] Callback error:', error);
+                log.error('callback error', error);
             }
         }
         this.eventHandlers.onMessage?.(message);

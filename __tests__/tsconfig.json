@@ -1,9 +1,9 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "types": [
-      "node"
-    ]
+    "types": ["node"],
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
   },
   "include": [
     "../globals.d.ts",
@@ -15,11 +15,5 @@
     "../src/**/*.ts",
     "./**/*.ts"
   ],
-  "exclude": [
-    "../node_modules",
-    "../dist",
-    "../extension",
-    "../*.js"
-  ]
+  "exclude": ["../node_modules", "../dist", "../extension", "../*.js"]
 }
-

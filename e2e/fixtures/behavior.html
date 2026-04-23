@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Spatial Navigation Behavior Test Page</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                background: #1a1a2e;
+                color: #eee;
+                padding: 20px;
+            }
+            section {
+                margin-bottom: 30px;
+            }
+            h2 {
+                color: #ffc107;
+                margin-bottom: 10px;
+                font-size: 14px;
+            }
+            .row {
+                display: flex;
+                gap: 12px;
+            }
+            .col {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            button {
+                background: #2a2a4a;
+                color: #eee;
+                border: 2px solid #444;
+                padding: 14px 22px;
+                border-radius: 8px;
+                font-size: 14px;
+                cursor: pointer;
+            }
+            .group {
+                border: 2px dashed #ffc107;
+                padding: 12px;
+                border-radius: 8px;
+            }
+            .activated {
+                background: #4ade80;
+                color: #000;
+            }
+        </style>
+    </head>
+    <body>
+        <section>
+            <h2>Plain horizontal row (4 buttons)</h2>
+            <div class="row" id="row">
+                <button data-id="r1">R1</button>
+                <button data-id="r2">R2</button>
+                <button data-id="r3">R3</button>
+                <button data-id="r4">R4</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Plain vertical column (3 buttons)</h2>
+            <div class="col" id="col">
+                <button data-id="c1">C1</button>
+                <button data-id="c2">C2</button>
+                <button data-id="c3">C3</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Contained focus group (Down at G3 should NOT escape)</h2>
+            <div class="group col" data-focus-group="contained;boundary=contain">
+                <button data-id="g1">G1</button>
+                <button data-id="g2">G2</button>
+                <button data-id="g3">G3</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Below the group (only reachable via wrap or boundary jump)</h2>
+            <div class="row">
+                <button data-id="below1">Below1</button>
+                <button data-id="below2">Below2</button>
+            </div>
+        </section>
+
+        <div id="last-activated" data-activated="(none)"></div>
+
+        <script src="./spatial-navigation.js"></script>
+        <script>
+            // Mark which element was last activated by Enter (for behavior assertions).
+            document.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-id]');
+                if (btn) {
+                    document.getElementById('last-activated').setAttribute('data-activated', btn.dataset.id);
+                    btn.classList.add('activated');
+                }
+            });
+
+            window.spatialNavConfig = {
+                scoringMode: 'geometric',
+                useCSSProperties: true,
+                wrapNavigation: false,
+            };
+
+            // No auto-focus — tests pick the starting element themselves so
+            // there's no race between an automatic focus and keyboard navigation.
+        </script>
+    </body>
+</html>

@@ -1,16 +1,22 @@
 /**
  * Menu-toggle handling helpers for Spatial Navigation.
  *
- * Some sites use hover-driven navigation menus that open on pointer enter and do
- * not reliably close on click/tap. For D-pad/Enter interactions we treat
- * aria-haspopup/aria-expanded toggles as true toggles: second press closes.
+ * Some sites use hover-driven navigation menus that open on pointer enter and
+ * do not reliably close on click/tap. For D-pad/Enter interactions we treat
+ * `aria-haspopup`/`aria-expanded` toggles as true toggles: a second press
+ * closes them. We try a hover-exit first (cheap, doesn't move focus); if the
+ * menu is still open we fall back to a synthetic "outside click".
  */
 
-import { safeGetAttr, safeJson } from '../utils/json';
+import { safeGetAttr } from '../utils/json';
 import { describeElement } from '../utils/dom';
 import { scheduleOverlayUpdate } from '../utils/focus-helpers';
 import { clampToViewport } from './click_utils';
+import { createLogger } from '../utils/logger';
 import type { SpatialNavState } from '../core/state';
+import type { BrowserRuntime } from '../globals';
+
+const log = createLogger('MenuToggle');
 
 interface MenuToggleState {
     isOpen: boolean;
@@ -18,6 +24,10 @@ interface MenuToggleState {
     submenu: HTMLElement | null;
     reason: 'aria-expanded' | 'submenu-visible' | 'submenu-hidden' | 'no-submenu';
 }
+
+const NAV_ROOT_DEPTH_LIMIT = 12;
+const HOVER_EXIT_INSET_PX = 8;
+const FALLBACK_FOCUS_RESTORE_DELAY_MS = 120;
 
 export function isMenuToggleElement(el: Element): boolean {
     const ariaHasPopup = safeGetAttr(el, 'aria-haspopup');
@@ -30,9 +40,10 @@ function isElementVisible(el: HTMLElement | null): boolean {
     try {
         const style = window.getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden') return false;
-        if (typeof style.opacity === 'string' && style.opacity.length && parseFloat(style.opacity) <= 0) return false;
+        if (typeof style.opacity === 'string' && style.opacity.length && parseFloat(style.opacity) <= 0)
+            return false;
     } catch {
-        // If we can't read styles, fall back to geometry checks.
+        // Fall through to geometry checks below.
     }
     try {
         const rect = el.getBoundingClientRect();
@@ -53,7 +64,9 @@ function looksLikeSubmenu(el: HTMLElement): boolean {
     if (/(menu|submenu|dropdown|child)/i.test(className)) return true;
 
     try {
-        return !!el.querySelector?.('a[href], button, [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]');
+        return !!el.querySelector?.(
+            'a[href], button, [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]'
+        );
     } catch {
         return false;
     }
@@ -63,21 +76,16 @@ function findNavigationRoot(start: Element): Element | null {
     let current: Element | null = start;
     let depth = 0;
 
-    while (current && depth < 12) {
-        const tagName = (current as any).tagName?.toLowerCase?.() as string | undefined;
-        if (tagName === 'nav' || tagName === 'header') {
-            return current;
-        }
+    while (current && depth < NAV_ROOT_DEPTH_LIMIT) {
+        const tagName = current.tagName?.toLowerCase();
+        if (tagName === 'nav' || tagName === 'header') return current;
 
         const role = safeGetAttr(current, 'role');
-        if (role === 'navigation') {
-            return current;
-        }
+        if (role === 'navigation') return current;
 
         const id = safeGetAttr(current, 'id') || '';
         if (id && /nav/i.test(id) && id.length <= 48) {
             try {
-                // Heuristic: treat as navigation only if it actually contains links/menuitems.
                 if ((current as HTMLElement).querySelector?.('a, [role="menuitem"], [role="link"]')) {
                     return current;
                 }
@@ -86,7 +94,7 @@ function findNavigationRoot(start: Element): Element | null {
             }
         }
 
-        current = (current as any).parentElement as Element | null;
+        current = current.parentElement;
         depth += 1;
     }
 
@@ -97,7 +105,7 @@ function findAssociatedSubmenu(toggle: Element): HTMLElement | null {
     const ariaControls = safeGetAttr(toggle, 'aria-controls');
     if (ariaControls) {
         const controlled = document.getElementById(ariaControls);
-        if (controlled && controlled.nodeType === 1) return controlled as unknown as HTMLElement;
+        if (controlled && controlled.nodeType === 1) return controlled;
     }
 
     const nextSibling = (toggle as HTMLElement).nextElementSibling;
@@ -106,10 +114,11 @@ function findAssociatedSubmenu(toggle: Element): HTMLElement | null {
     }
 
     // Common wrappers for drop-down menus.
-    const container = (toggle as HTMLElement).closest?.('.folder-parent, li, nav, header, [role="menuitem"]') as HTMLElement | null;
+    const container = (toggle as HTMLElement).closest?.(
+        '.folder-parent, li, nav, header, [role="menuitem"]'
+    ) as HTMLElement | null;
     if (container) {
-        const directChildren = Array.from(container.children);
-        for (const child of directChildren) {
+        for (const child of Array.from(container.children)) {
             if (child === toggle) continue;
             if (child.nodeType === 1 && looksLikeSubmenu(child as HTMLElement)) {
                 return child as HTMLElement;
@@ -134,11 +143,9 @@ function detectMenuToggleState(toggle: Element): MenuToggleState {
     if (submenu && isElementVisible(submenu)) {
         return { isOpen: true, ariaExpanded, submenu, reason: 'submenu-visible' };
     }
-
     if (submenu) {
         return { isOpen: false, ariaExpanded, submenu, reason: 'submenu-hidden' };
     }
-
     return { isOpen: false, ariaExpanded, submenu: null, reason: 'no-submenu' };
 }
 
@@ -159,11 +166,12 @@ function isWithinAny(hit: Element | null, roots: Array<Element | null | undefine
 function looksInteractive(el: Element | null): boolean {
     if (!el) return false;
     try {
-        const tagName = (el as any).tagName?.toLowerCase?.() as string | undefined;
+        const tagName = el.tagName?.toLowerCase();
         if (!tagName) return false;
 
         if (tagName === 'a') return safeGetAttr(el, 'href') !== null;
-        if (tagName === 'button' || tagName === 'input' || tagName === 'select' || tagName === 'textarea') return true;
+        if (tagName === 'button' || tagName === 'input' || tagName === 'select' || tagName === 'textarea')
+            return true;
 
         const role = safeGetAttr(el, 'role');
         if (role === 'button' || role === 'menuitem' || role === 'link') return true;
@@ -181,25 +189,49 @@ function pickOutsidePoint(options: {
     submenuRect: DOMRect | null;
     exclusions: Element[];
 }): { x: number; y: number; label: string; hit: Element | null } {
-    const inset = 8;
+    const inset = HOVER_EXIT_INSET_PX;
     const { toggleRect, submenuRect, exclusions } = options;
 
     const points: Array<{ label: string; x: number; y: number }> = [];
 
     if (submenuRect) {
-        points.push({ label: 'submenu-below', x: submenuRect.left + submenuRect.width / 2, y: submenuRect.bottom + inset });
+        points.push({
+            label: 'submenu-below',
+            x: submenuRect.left + submenuRect.width / 2,
+            y: submenuRect.bottom + inset,
+        });
         points.push({ label: 'submenu-right', x: submenuRect.right + inset, y: submenuRect.top + inset });
         points.push({ label: 'submenu-left', x: submenuRect.left - inset, y: submenuRect.top + inset });
-        points.push({ label: 'submenu-above', x: submenuRect.left + submenuRect.width / 2, y: submenuRect.top - inset });
+        points.push({
+            label: 'submenu-above',
+            x: submenuRect.left + submenuRect.width / 2,
+            y: submenuRect.top - inset,
+        });
     }
 
-    points.push({ label: 'toggle-below', x: toggleRect.left + toggleRect.width / 2, y: toggleRect.bottom + inset });
-    points.push({ label: 'toggle-above', x: toggleRect.left + toggleRect.width / 2, y: toggleRect.top - inset });
-    points.push({ label: 'viewport-center', x: (window?.innerWidth ?? 0) / 2, y: (window?.innerHeight ?? 0) / 2 });
+    points.push({
+        label: 'toggle-below',
+        x: toggleRect.left + toggleRect.width / 2,
+        y: toggleRect.bottom + inset,
+    });
+    points.push({
+        label: 'toggle-above',
+        x: toggleRect.left + toggleRect.width / 2,
+        y: toggleRect.top - inset,
+    });
+    points.push({
+        label: 'viewport-center',
+        x: (window?.innerWidth ?? 0) / 2,
+        y: (window?.innerHeight ?? 0) / 2,
+    });
     points.push({ label: 'viewport-top-left', x: inset, y: inset });
     points.push({ label: 'viewport-top-right', x: (window?.innerWidth ?? 0) - inset, y: inset });
     points.push({ label: 'viewport-bottom-left', x: inset, y: (window?.innerHeight ?? 0) - inset });
-    points.push({ label: 'viewport-bottom-right', x: (window?.innerWidth ?? 0) - inset, y: (window?.innerHeight ?? 0) - inset });
+    points.push({
+        label: 'viewport-bottom-right',
+        x: (window?.innerWidth ?? 0) - inset,
+        y: (window?.innerHeight ?? 0) - inset,
+    });
 
     let fallback: { x: number; y: number; label: string; hit: Element | null } | null = null;
 
@@ -217,8 +249,16 @@ function pickOutsidePoint(options: {
 
     if (fallback) return fallback;
 
-    const center = clampToViewport(toggleRect.left + toggleRect.width / 2, toggleRect.top + toggleRect.height / 2);
-    return { x: center.x, y: center.y, label: 'toggle-center', hit: document.elementFromPoint(center.x, center.y) };
+    const center = clampToViewport(
+        toggleRect.left + toggleRect.width / 2,
+        toggleRect.top + toggleRect.height / 2
+    );
+    return {
+        x: center.x,
+        y: center.y,
+        label: 'toggle-center',
+        hit: document.elementFromPoint(center.x, center.y),
+    };
 }
 
 function dispatchHoverExit(target: Element, clientX: number, clientY: number): void {
@@ -229,21 +269,20 @@ function dispatchHoverExit(target: Element, clientX: number, clientY: number): v
         clientX,
         clientY,
         buttons: 0,
-        detail: 0
+        detail: 0,
     };
 
-    // Dispatch both Pointer and Mouse exit events for better compatibility.
-    if (typeof (window as any).PointerEvent === 'function') {
+    if (typeof PointerEvent === 'function') {
         const pointerExit = {
             ...commonOptions,
             pointerId: 1,
             pointerType: 'mouse',
             isPrimary: true,
             button: -1,
-            pressure: 0
-        } as any;
-        target.dispatchEvent(new (window as any).PointerEvent('pointerout', pointerExit));
-        target.dispatchEvent(new (window as any).PointerEvent('pointerleave', pointerExit));
+            pressure: 0,
+        };
+        target.dispatchEvent(new PointerEvent('pointerout', pointerExit));
+        target.dispatchEvent(new PointerEvent('pointerleave', pointerExit));
     }
 
     target.dispatchEvent(new MouseEvent('mouseout', commonOptions));
@@ -270,46 +309,36 @@ export function tryCloseOpenMenuToggle(options: {
         (actionElement as HTMLElement);
 
     const navRoot = findNavigationRoot(actionElement);
-    const exclusions = [menuContainer, menuState.submenu, actionElement, navRoot].filter(Boolean) as Element[];
+    const exclusions = [menuContainer, menuState.submenu, actionElement, navRoot].filter(
+        Boolean
+    ) as Element[];
 
     const submenuRect = menuState.submenu ? menuState.submenu.getBoundingClientRect() : null;
     const toggleRect = actionElement.getBoundingClientRect();
     const outside = pickOutsidePoint({ toggleRect, submenuRect, exclusions });
 
-    if (window.flutterSpatialNavDebug) {
-        console.log(`[SpatialNav DEBUG] Menu toggle appears OPEN (${menuState.reason}) - closing via hover-exit + outside click ${safeJson({
-            toggle: describeElement(actionElement),
-            ariaExpanded: menuState.ariaExpanded,
-            submenu: menuState.submenu ? describeElement(menuState.submenu) : null,
-            navRoot: navRoot ? describeElement(navRoot) : null,
-            outside: {
-                label: outside.label,
-                x: outside.x,
-                y: outside.y,
-                hit: describeElement(outside.hit)
-            }
-        })}`);
-    }
+    log.debug(`menu toggle OPEN (${menuState.reason}) — closing via hover-exit + outside click`, {
+        toggle: describeElement(actionElement),
+        ariaExpanded: menuState.ariaExpanded,
+        submenu: menuState.submenu ? describeElement(menuState.submenu) : null,
+        navRoot: navRoot ? describeElement(navRoot) : null,
+        outside: { label: outside.label, x: outside.x, y: outside.y, hit: describeElement(outside.hit) },
+    });
 
-    // 1) Try to close hover-driven menus (JS handlers attached to mouseleave).
+    // 1. Try to close hover-driven menus first (no focus disruption).
     dispatchHoverExit(actionElement, outside.x, outside.y);
     if (menuState.submenu) {
         dispatchHoverExit(menuState.submenu, outside.x, outside.y);
     }
 
-    // 2) If hover-exit already closed the menu, do NOT click outside.
-    // Clicking outside will often steal focus from the toggle (unfocus), and on some
-    // sites may accidentally trigger navigation if the point lands on chrome/nav.
+    // 2. If hover-exit closed the menu, skip the outside click entirely.
+    //    Outside clicks can steal focus or accidentally trigger nav chrome.
     const afterHover = detectMenuToggleState(actionElement);
     if (!afterHover.isOpen) {
-        if (window.flutterSpatialNavDebug) {
-            console.log(`[SpatialNav DEBUG] Menu closed via hover-exit (${menuState.reason}) - skipping outside click`);
-        }
+        log.debug(`menu closed via hover-exit (${menuState.reason}) — skipping outside click`);
         state.dirty = true;
         try {
-            if (typeof (actionElement as any).focus === 'function') {
-                (actionElement as any).focus();
-            }
+            (actionElement as HTMLElement).focus?.();
             scheduleOverlayUpdate(actionElement as HTMLElement, state);
         } catch {
             // ignore
@@ -319,8 +348,8 @@ export function tryCloseOpenMenuToggle(options: {
         return true;
     }
 
-    // 3) Still open: click outside as a fallback. Run in a later task to avoid
-    // re-entrancy issues and to allow any menu close transitions to settle.
+    // 3. Still open — synthetic outside click as fallback. Defer to a later
+    //    task to let any close transitions settle and avoid re-entrancy.
     setTimeout(() => {
         const currentDomHandlerId = document.documentElement.getAttribute('data-spatnav-handler-id');
         if (String(closeHandlerId) !== currentDomHandlerId) return;
@@ -330,32 +359,36 @@ export function tryCloseOpenMenuToggle(options: {
 
         const toggleRectNow = actionElement.getBoundingClientRect();
         const submenuRectNow = stillOpen.submenu ? stillOpen.submenu.getBoundingClientRect() : submenuRect;
-        const outsideNow = pickOutsidePoint({ toggleRect: toggleRectNow, submenuRect: submenuRectNow, exclusions });
+        const outsideNow = pickOutsidePoint({
+            toggleRect: toggleRectNow,
+            submenuRect: submenuRectNow,
+            exclusions,
+        });
 
-        if (window.flutterSpatialNavDebug) {
-            console.log(`[SpatialNav DEBUG] Menu still open - applying outside-click fallback ${safeJson({
-                toggle: describeElement(actionElement),
-                outside: {
-                    label: outsideNow.label,
-                    x: outsideNow.x,
-                    y: outsideNow.y,
-                    hit: describeElement(outsideNow.hit),
-                }
-            })}`);
-        }
+        log.debug('menu still open — outside-click fallback', {
+            toggle: describeElement(actionElement),
+            outside: {
+                label: outsideNow.label,
+                x: outsideNow.x,
+                y: outsideNow.y,
+                hit: describeElement(outsideNow.hit),
+            },
+        });
 
-        // Prefer native outside click when available for trusted closing.
-        if (canRequestNativeClick && runtimeApi && typeof (runtimeApi as any).sendMessage === 'function') {
+        const runtime = runtimeApi as BrowserRuntime | null;
+        // Native injection produces a Trusted MotionEvent — many sites only
+        // close menus on real input. Falls back to JS click otherwise.
+        if (canRequestNativeClick && runtime && typeof runtime.sendMessage === 'function') {
             const dpr = window.devicePixelRatio || 1;
             const physicalX = outsideNow.x * dpr;
             const physicalY = outsideNow.y * dpr;
             try {
-                console.log(`[SpatialNav] Closing menu toggle via NATIVE outside click ${safeJson({
+                log.debug('closing menu toggle via NATIVE outside click', {
                     css: { x: outsideNow.x, y: outsideNow.y, point: outsideNow.label },
                     dpr,
-                    final: { x: physicalX, y: physicalY }
-                })}`);
-                (runtimeApi as any).sendMessage({
+                    final: { x: physicalX, y: physicalY },
+                });
+                runtime.sendMessage({
                     type: 'simulateClick',
                     x: physicalX,
                     y: physicalY,
@@ -365,20 +398,40 @@ export function tryCloseOpenMenuToggle(options: {
                         point: outsideNow.label,
                         hit: describeElement(outsideNow.hit),
                         context: 'menuToggleClose',
-                    }
+                    },
                 });
             } catch (e) {
-                console.warn('[SpatialNav] Native outside-click failed, using JS fallback', e);
+                log.warn('native outside-click failed, using JS fallback', e);
             }
         } else {
-            const hit = outsideNow.hit as any;
+            const hit = outsideNow.hit;
             try {
                 if (hit && typeof hit.dispatchEvent === 'function') {
-                    hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, clientX: outsideNow.x, clientY: outsideNow.y, buttons: 1, detail: 1 }));
-                    hit.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, clientX: outsideNow.x, clientY: outsideNow.y, buttons: 1, detail: 1 }));
+                    hit.dispatchEvent(
+                        new MouseEvent('mousedown', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: outsideNow.x,
+                            clientY: outsideNow.y,
+                            buttons: 1,
+                            detail: 1,
+                        })
+                    );
+                    hit.dispatchEvent(
+                        new MouseEvent('mouseup', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: outsideNow.x,
+                            clientY: outsideNow.y,
+                            buttons: 1,
+                            detail: 1,
+                        })
+                    );
                 }
-                if (hit && typeof hit.click === 'function') {
-                    hit.click();
+                if (hit && typeof (hit as HTMLElement).click === 'function') {
+                    (hit as HTMLElement).click();
                 } else if (typeof document.body?.click === 'function') {
                     document.body.click();
                 }
@@ -387,20 +440,18 @@ export function tryCloseOpenMenuToggle(options: {
             }
         }
 
-        // Restore focus to the toggle after the outside-click closes the menu.
-        // Native injection will typically move focus to the clicked element.
+        // Restore focus to the toggle after the outside-click has propagated.
+        // Native injection typically moves focus to the clicked element.
         setTimeout(() => {
             const currentId2 = document.documentElement.getAttribute('data-spatnav-handler-id');
             if (String(closeHandlerId) !== currentId2) return;
             try {
-                if (typeof (actionElement as any).focus === 'function') {
-                    (actionElement as any).focus();
-                }
+                (actionElement as HTMLElement).focus?.();
                 scheduleOverlayUpdate(actionElement as HTMLElement, state);
             } catch {
                 // ignore
             }
-        }, 120);
+        }, FALLBACK_FOCUS_RESTORE_DELAY_MS);
     }, 0);
 
     state.dirty = true;
@@ -408,4 +459,3 @@ export function tryCloseOpenMenuToggle(options: {
     event.stopPropagation();
     return true;
 }
-

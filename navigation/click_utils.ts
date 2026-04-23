@@ -14,7 +14,7 @@ export function clampToViewport(x: number, y: number): { x: number; y: number } 
     const maxY = Math.max(0, (window?.innerHeight ?? 0) - 1);
     return {
         x: clamp(x, 0, maxX),
-        y: clamp(y, 0, maxY)
+        y: clamp(y, 0, maxY),
     };
 }
 
@@ -28,7 +28,12 @@ function isHitWithinTarget(hit: Element | null, target: Element): boolean {
     }
 }
 
-export function pickClickPoint(target: Element): { x: number; y: number; label: string; hit: Element | null } {
+export function pickClickPoint(target: Element): {
+    x: number;
+    y: number;
+    label: string;
+    hit: Element | null;
+} {
     const rect = target.getBoundingClientRect();
     const inset = 1;
 
@@ -41,7 +46,7 @@ export function pickClickPoint(target: Element): { x: number; y: number; label: 
         { label: 'top-center', x: rect.left + rect.width / 2, y: rect.top + inset },
         { label: 'bottom-center', x: rect.left + rect.width / 2, y: rect.bottom - inset },
         { label: 'center-left', x: rect.left + inset, y: rect.top + rect.height / 2 },
-        { label: 'center-right', x: rect.right - inset, y: rect.top + rect.height / 2 }
+        { label: 'center-right', x: rect.right - inset, y: rect.top + rect.height / 2 },
     ];
 
     for (const point of points) {
@@ -53,6 +58,10 @@ export function pickClickPoint(target: Element): { x: number; y: number; label: 
     }
 
     const fallback = clampToViewport(points[0].x, points[0].y);
-    return { x: fallback.x, y: fallback.y, label: 'center', hit: document.elementFromPoint(fallback.x, fallback.y) };
+    return {
+        x: fallback.x,
+        y: fallback.y,
+        label: 'center',
+        hit: document.elementFromPoint(fallback.x, fallback.y),
+    };
 }
-

@@ -1,0 +1,67 @@
+name: Bug Report
+description: Report a problem with spatial navigation
+labels: ['bug', 'triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. The more detail you provide, the faster we can fix it.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What version of `@dart-technologies/spatial-navigation-geckoview` are you using?
+      placeholder: '3.0.0'
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      description: Where does the issue occur?
+      options:
+        - GeckoView (Android TV)
+        - GeckoView (Android Automotive / AAOS)
+        - GeckoView (mobile)
+        - flutter-geckoview host
+        - Standalone web (testing)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal HTML/JS to reproduce, or steps in a host app.
+      placeholder: |
+        1. Load page X
+        2. Press Down on D-pad
+        3. Focus jumps to wrong element
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console logs (with debug enabled)
+      description: |
+        Set `window.SPATIAL_NAV_DEBUG = true` (or `flutterSpatialNavDebug = true`) before the extension loads,
+        then paste relevant `[SpatialNav:*]` log lines here.
+      render: shell
+  - type: textarea
+    id: config
+    attributes:
+      label: Config (if non-default)
+      description: Contents of `window.spatialNavConfig` if you set one.
+      render: javascript

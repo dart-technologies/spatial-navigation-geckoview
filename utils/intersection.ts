@@ -5,7 +5,10 @@
  */
 
 import { updateEntryGeometry } from '../core/geometry';
-import type { SpatialNavState, FocusableEntry } from '../core/state';
+import { createLogger } from './logger';
+import type { SpatialNavState } from '../core/state';
+
+const log = createLogger('Intersection');
 
 function supportsIntersectionObserver(): boolean {
     return typeof window !== 'undefined' && typeof window.IntersectionObserver !== 'undefined';
@@ -13,7 +16,7 @@ function supportsIntersectionObserver(): boolean {
 
 function createObserver(state: SpatialNavState): IntersectionObserver | null {
     if (!supportsIntersectionObserver()) {
-        console.warn('[SpatialNav] IntersectionObserver unsupported in this environment');
+        log.debug('IntersectionObserver unsupported in this environment');
         return null;
     }
 
@@ -21,7 +24,7 @@ function createObserver(state: SpatialNavState): IntersectionObserver | null {
     const options: IntersectionObserverInit = {
         root: null,
         rootMargin: config.intersectionRootMargin || '200px',
-        threshold: config.intersectionThreshold || 0
+        threshold: config.intersectionThreshold || 0,
     };
 
     const observer = new IntersectionObserver((entries) => {
@@ -69,8 +72,8 @@ export function syncIntersectionObserver(state: SpatialNavState): void {
                 if (state.intersectionObserver) {
                     state.intersectionObserver.observe(element);
                 }
-            } catch (err) {
-                // Ignore observation failures (detached nodes, etc.)
+            } catch {
+                // Ignore observation failures (detached nodes, etc.).
             }
         });
     }
@@ -82,7 +85,7 @@ export function observeNewElement(state: SpatialNavState, element: Element): voi
     }
     try {
         state.intersectionObserver.observe(element);
-    } catch (err) {
+    } catch {
         // ignore
     }
 }
@@ -93,7 +96,7 @@ export function unobserveElement(state: SpatialNavState, element: Element): void
     }
     try {
         state.intersectionObserver.unobserve(element);
-    } catch (err) {
+    } catch {
         // ignore
     }
 }

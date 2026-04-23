@@ -1,0 +1,10 @@
+node_modules/
+dist/
+extension/spatial_navigation.js
+extension/spatial_navigation.debug.js
+extension/background.js
+playwright-report/
+e2e/visual.spec.ts-snapshots/
+package-lock.json
+yarn.lock
+coverage/

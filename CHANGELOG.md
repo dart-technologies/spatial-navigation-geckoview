@@ -5,6 +5,61 @@ All notable changes to the Spatial Navigation for GeckoView extension will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] — Unreleased
+
+A hygiene + hardening release. No public API changes; default behavior shifts noted under **Behavior changes**.
+
+### Behavior changes (review before upgrading)
+
+- **Debug logging is OFF by default in production builds.** v3.0.0 hardcoded `flutterSpatialNavDebug = true` in `main.ts`, which kept full `console.log` chains running on every keystroke. Production bundles now strip `console.log/info/debug` at build time and the runtime flag defaults off.
+  - **Opt back in:** `window.SPATIAL_NAV_DEBUG = true` (or the legacy `window.flutterSpatialNavDebug = true`) before the script loads.
+- **Default focus indicator color changed from `#FFC107` (amber, 1.6:1 contrast on white) to `#1565C0` (blue 800, ~5.4:1).** The amber default failed WCAG 2.1 non-text contrast (3:1 minimum). To keep the old color: `window.spatialNavConfig = { color: '#FFC107' }`.
+- **Overlay now has `role="presentation"` and `aria-hidden="true"`.** Screen readers no longer try to announce the overlay (which is decorative chrome — focus is communicated via the actual focused element).
+- **Legacy `window.flutterFocusState` and `window.flutterShowOverlay` now warn on first access.** They will be removed in v4. Use `window.spatialNavState` and `window.showSpatialNavOverlay` instead.
+
+### Added
+
+- **Config presets** — `applyPreset('tv' | 'phone' | 'tablet' | 'kiosk', overrides?)` for common form factors. See `core/config.ts` (`CONFIG_PRESETS`).
+- **Config schema validation** — `validateUserConfig()` checks every key against its declared type and rejects malformed values with a logger warning instead of silently corrupting state. Runs automatically inside `getConfig()` and `updateConfig()`.
+- **Bounded reconnect backoff** in `GeckoViewMessagingAdapter`: capped at 30s and 6 attempts (was unbounded `delay * attempts`).
+- **Subpath exports actually built**: `dist/core.{js,esm.js}` and `dist/messaging.{js,esm.js}` now exist, matching the package.json `exports` claims.
+- **Build-time NODE_ENV replacement** via `@rollup/plugin-replace` so production bundles tree-shake `DEBUG`-gated code.
+- **Bundle size budgets** enforced in CI by `scripts/check-bundle-size.mjs`.
+- **Coverage reporting** via `c8` (`npm run test:coverage`).
+- **Integration tests for messaging adapters** (`__tests__/messaging.test.ts`) and the config validator + presets (`__tests__/validation.test.ts`).
+- **GitHub config**: bug/feature issue templates, PR template, Dependabot, CodeQL workflow.
+- **TypeDoc** for API docs (`npm run docs`).
+- **ESLint + Prettier + .editorconfig + Husky pre-commit + commitlint**.
+- **Conventional Commits enforcement** via commitlint (matches the README's existing claim).
+- **`SCORING_CONSTANTS`** exported from `core/config.ts`. Score weights are now named constants (`SAME_GROUP_BONUS`, `GRID_BONUS`, etc.) with documented hierarchy. See `docs/SCORING.md`.
+- **`safeGetBoundingClientRect()`** in `core/geometry.ts` — defensive wrapper for detached-node throws.
+- **`utils/deprecation.ts`** module that wires legacy globals through `Object.defineProperty` getters to fire a single warning per legacy name.
+- **WCAG-conforming default contrast** (see Behavior changes).
+- **ARIA role on overlay** (see Behavior changes).
+
+### Changed
+
+- **TypeScript `strict: true`** (was `strict: false` with only `noImplicitAny: true`). Fixed all 6 resulting type errors.
+- **Logger is now load-bearing** — every source file routes through `createLogger(...)` instead of bare `console.log`. Production bundles emit zero `console.log/info/debug` calls; `console.warn`/`console.error` preserved.
+- **Removed `(window as any)` casts** across the codebase in favor of properly extended `Window` interface declarations in `globals.d.ts`.
+- **Removed ~14 commented-out `if ((window as any).flutterSpatialNavDebug) console.log(...)` blocks** in `core/scoring.ts` and elsewhere.
+- **`main.ts` refactored**: 526 lines → split into `initSpatialNavigation()`, `reinitializeAfterPageshow()`, `installWICGPolyfill()`, `connectToBackground()`. Removed the `"REMOVED: DOM and window guards were causing stale handlers"` apology comment — kept the design rationale as the docstring on `initSpatialNavigation`.
+- **`navigation/handlers.ts` refactored**: split out `handleActivationKey`, `dispatchHoverPrime`, `dispatchFullPointerSequence`, `applyClickFeedback` helpers. Tag/input lookups extracted to `Set` constants.
+- **Magic numbers extracted to named constants** throughout (`RAPID_REPEAT_THRESHOLD_MS`, `SLOW_REFRESH_THRESHOLD_MS`, `POSITION_HINT_EXPIRY_MS`, `MAX_RECONNECT_DELAY_MS`, etc.).
+- **CI hardened**: separate `lint`, `test` (matrix), `coverage`, `build`, `audit`, `visual-tests` jobs. Adds `npm run format:check`, `npm run typecheck:tests`, `npm audit --omit=dev --audit-level=high`, bundle-size budget enforcement, and CodeQL on a separate workflow.
+
+### Removed
+
+- Dead duplicate `calculateDistance(rect1, rect2)` in `core/geometry.ts` (only the multi-method version in `core/scoring.ts` is used).
+- Duplicate `FocusGroup` interface in `core/state.ts` (canonical class lives in `core/focus_group.ts`; `state.ts` re-exports it as a type alias).
+- Hardcoded debug-by-default and dead commented-out debug blocks (see Changed).
+
+### Documentation
+
+- New: [`docs/SCORING.md`](docs/SCORING.md) — scoring weights and the design rationale.
+- New: [`docs/MIGRATION.md`](docs/MIGRATION.md) — v2 → v3 migration notes and the v3.0.0 → v3.0.1 deltas above.
+- README updated for new defaults, presets, and accurate config table.
+
 ## [3.0.0]
 
 Initial public release.
@@ -115,21 +170,21 @@ Initial public release.
 
 ### Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `color` | string | `'#FFC107'` | Focus highlight color |
-| `outlineWidth` | number | `3` | Outline width in pixels |
-| `autoRefocus` | boolean | `true` | Recover focus when lost |
-| `observeMutations` | boolean | `true` | Watch for DOM changes |
-| `observeScroll` | boolean | `true` | Update on scroll |
-| `traverseShadowDom` | boolean | `false` | Recurse into Shadow DOM |
-| `observeVirtualContainers` | boolean | `true` | Detect virtual scroll |
-| `enableAria` | boolean | `false` | Enable ARIA announcements |
-| `focusTrapDetection` | boolean | `false` | Detect modals/dialogs |
-| `precomputeCandidates` | boolean | `true` | Background pre-computation |
-| `scoringMode` | string | `'geometric'` | Algorithm: geometric or grid |
-| `distanceFunction` | string | `'euclidean'` | Distance calculation method |
-| `overlapThreshold` | number | `0` | Pixels of overlap allowed |
-| `gridAlignmentTolerance` | number | `20` | Grid alignment tolerance |
-| `wrapNavigation` | boolean | `false` | Wrap at boundaries |
-| `useCSSProperties` | boolean | `true` | Read CSS custom properties |
+| Option                     | Type    | Default       | Description                  |
+| -------------------------- | ------- | ------------- | ---------------------------- |
+| `color`                    | string  | `'#FFC107'`   | Focus highlight color        |
+| `outlineWidth`             | number  | `3`           | Outline width in pixels      |
+| `autoRefocus`              | boolean | `true`        | Recover focus when lost      |
+| `observeMutations`         | boolean | `true`        | Watch for DOM changes        |
+| `observeScroll`            | boolean | `true`        | Update on scroll             |
+| `traverseShadowDom`        | boolean | `false`       | Recurse into Shadow DOM      |
+| `observeVirtualContainers` | boolean | `true`        | Detect virtual scroll        |
+| `enableAria`               | boolean | `false`       | Enable ARIA announcements    |
+| `focusTrapDetection`       | boolean | `false`       | Detect modals/dialogs        |
+| `precomputeCandidates`     | boolean | `true`        | Background pre-computation   |
+| `scoringMode`              | string  | `'geometric'` | Algorithm: geometric or grid |
+| `distanceFunction`         | string  | `'euclidean'` | Distance calculation method  |
+| `overlapThreshold`         | number  | `0`           | Pixels of overlap allowed    |
+| `gridAlignmentTolerance`   | number  | `20`          | Grid alignment tolerance     |
+| `wrapNavigation`           | boolean | `false`       | Wrap at boundaries           |
+| `useCSSProperties`         | boolean | `true`        | Read CSS custom properties   |

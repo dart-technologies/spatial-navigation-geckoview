@@ -11,7 +11,10 @@
  */
 
 import { BaseMessagingAdapter } from './adapter';
+import { createLogger } from '../utils/logger';
 import type { OutboundMessage } from './types';
+
+const log = createLogger('Messaging');
 
 /**
  * No-op messaging adapter that silently accepts all messages.
@@ -35,21 +38,21 @@ export class NoopMessagingAdapter extends BaseMessagingAdapter {
     async connect(): Promise<void> {
         this.setState('connected');
         if (this._verbose) {
-            console.log('[NoopAdapter] Connected (no-op mode)');
+            log.info('noop adapter connected (no-op mode)');
         }
     }
 
     disconnect(): void {
         this.setState('disconnected');
         if (this._verbose) {
-            console.log('[NoopAdapter] Disconnected');
+            log.info('noop adapter disconnected');
         }
     }
 
     send(message: OutboundMessage): boolean {
         if (this._verbose) {
-            console.log('[NoopAdapter] Message dropped:', message.type);
+            log.debug('noop adapter message dropped', message.type);
         }
-        return true; // Pretend success
+        return true;
     }
 }

@@ -22,9 +22,8 @@ interface MockDocument {
 
 // Extend globalThis for test globals
 declare global {
-    // eslint-disable-next-line no-var
     var spatialNavConfig: Partial<SpatialNavConfig> | undefined;
-    // eslint-disable-next-line no-var
+
     var flutterSpatialNavConfig: Partial<SpatialNavConfig> | undefined;
 }
 
@@ -37,7 +36,7 @@ const mockStyles = new Map<string, string>();
 
 // Mock getComputedStyle
 (globalThis as any).getComputedStyle = () => ({
-    getPropertyValue: (prop: string) => mockStyles.get(prop) || ''
+    getPropertyValue: (prop: string) => mockStyles.get(prop) || '',
 });
 
 // Mock document
@@ -46,8 +45,8 @@ const mockStyles = new Map<string, string>();
     createElement: (tag: string): MockElement => ({
         tagName: tag.toUpperCase(),
         parentElement: null,
-        contains: () => false
-    })
+        contains: () => false,
+    }),
 };
 
 import {
@@ -55,7 +54,7 @@ import {
     getCSSNavAction,
     getCSSNavFunction,
     getCSSNavProperties,
-    getEffectiveScoringMode
+    getEffectiveScoringMode,
 } from '../utils/css-properties';
 
 describe('CSS Custom Properties', () => {

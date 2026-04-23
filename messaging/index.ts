@@ -18,7 +18,7 @@ export type {
     RefreshMessage,
     MessageCallback,
     ConnectionState,
-    MessagingEvents
+    MessagingEvents,
 } from './types';
 
 // Adapter interface and base class

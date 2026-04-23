@@ -54,17 +54,17 @@ npm test
 
 ## Scripts
 
-| Command | Description |
-|---------|-------------|
-| `npm run build` | Build all distribution formats |
-| `npm run build:all` | Build + copy to extension folder |
-| `npm run build:types` | Generate TypeScript declarations |
-| `npm test` | Run unit tests |
-| `npm run test:watch` | Run tests in watch mode |
-| `npm run test:benchmark` | Run performance benchmarks |
-| `npm run test:visual` | Run Playwright visual tests |
-| `npm run lint` | Type-check with TypeScript |
-| `npm run clean` | Remove dist/ directory |
+| Command                  | Description                      |
+| ------------------------ | -------------------------------- |
+| `npm run build`          | Build all distribution formats   |
+| `npm run build:all`      | Build + copy to extension folder |
+| `npm run build:types`    | Generate TypeScript declarations |
+| `npm test`               | Run unit tests                   |
+| `npm run test:watch`     | Run tests in watch mode          |
+| `npm run test:benchmark` | Run performance benchmarks       |
+| `npm run test:visual`    | Run Playwright visual tests      |
+| `npm run lint`           | Type-check with TypeScript       |
+| `npm run clean`          | Remove dist/ directory           |
 
 ## Code Style
 
@@ -125,6 +125,7 @@ Target: <5ms navigation latency with 1000+ elements.
 ### PR Title Convention
 
 Use conventional commit format:
+
 - `feat: add new feature`
 - `fix: resolve bug`
 - `docs: update documentation`
@@ -135,6 +136,7 @@ Use conventional commit format:
 ## Reporting Issues
 
 When reporting bugs, include:
+
 - Browser/GeckoView version
 - Host application (flutter-geckoview, react-native, etc.)
 - Minimal reproduction steps
@@ -144,6 +146,7 @@ When reporting bugs, include:
 ## Feature Requests
 
 Feature requests are welcome! Please:
+
 - Check existing issues first
 - Describe the use case
 - Explain how it benefits users

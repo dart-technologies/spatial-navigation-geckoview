@@ -16,15 +16,20 @@ export function safeJson(value: unknown): string {
         return JSON.stringify({
             name: value.name,
             message: value.message,
-            stack: value.stack
+            stack: value.stack,
         });
     }
 
-    if (value && typeof value === 'object' && 'message' in (value as object) && typeof (value as { message: unknown }).message === 'string') {
+    if (
+        value &&
+        typeof value === 'object' &&
+        'message' in (value as object) &&
+        typeof (value as { message: unknown }).message === 'string'
+    ) {
         try {
             return JSON.stringify({
                 ...(value as object),
-                message: (value as { message: string }).message
+                message: (value as { message: string }).message,
             });
         } catch {
             // Fall through to best-effort stringify below.

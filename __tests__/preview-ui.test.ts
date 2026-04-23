@@ -1,136 +1,156 @@
 /**
- * Preview UI tests (chevrons around focus ring)
+ * Preview UI tests — chevrons positioned around the focus ring.
  */
 
-import test from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { directionByName } from '../core/config';
+import { directionByName, type Direction } from '../core/config';
 import { updatePreviewVisuals } from '../core/preview';
-import { setupMockEnv } from './helpers/mock_env';
+import {
+    setupDomEnv,
+    teardownDomEnv,
+    attachElement,
+    createElement,
+    createTestState,
+} from './helpers/dom_env';
+import type { NavigationCandidate } from '../core/scoring';
 
-function makePreviewEntry() {
-    const container = {
-        className: 'focus-preview',
-        style: {} as Record<string, string>,
-        setAttribute: () => { },
-        removeAttribute: () => { },
-    } as unknown as HTMLElement;
-
-    const arrow = { style: {} as Record<string, string> } as unknown as HTMLElement;
-
-    return { container, arrow };
+function makePreviewLayer(): {
+    layer: HTMLElement;
+    entries: Record<'up' | 'down' | 'left' | 'right', { container: HTMLElement; arrow: HTMLElement }>;
+} {
+    const layer = attachElement(createElement({ tagName: 'div', id: 'preview-layer' }));
+    const directions = ['up', 'down', 'left', 'right'] as const;
+    const entries = {} as Record<
+        'up' | 'down' | 'left' | 'right',
+        { container: HTMLElement; arrow: HTMLElement }
+    >;
+    for (const dir of directions) {
+        const container = createElement({ tagName: 'div', className: `focus-preview focus-preview-${dir}` });
+        const arrow = createElement({ tagName: 'div', className: 'focus-preview-arrow' });
+        container.appendChild(arrow);
+        layer.appendChild(container);
+        entries[dir] = { container, arrow };
+    }
+    return { layer, entries };
 }
 
-test('updatePreviewVisuals positions chevron outside current rect (right)', () => {
-    setupMockEnv({ innerWidth: 1920, innerHeight: 1080 });
+describe('updatePreviewVisuals', () => {
+    beforeEach(() => setupDomEnv({ innerWidth: 1920, innerHeight: 1080 }));
+    afterEach(() => teardownDomEnv());
 
-    const currentRect = {
-        left: 100,
-        top: 100,
-        right: 200,
-        bottom: 140,
-        width: 100,
-        height: 40,
-        x: 100,
-        y: 100,
-        toJSON: () => ({})
-    } as DOMRect;
+    test('positions the right chevron just outside the current rect', () => {
+        const current = attachElement(
+            createElement({ tagName: 'button', rect: { x: 100, y: 100, width: 100, height: 40 } })
+        );
+        const target = attachElement(
+            createElement({ tagName: 'button', rect: { x: 300, y: 100, width: 100, height: 40 } })
+        );
 
-    const right = makePreviewEntry();
-    const state: any = {
-        currentIndex: 0,
-        focusables: [{ element: {} }],
-        focusableElements: [{}],
-        previewEnabled: true,
-        previewLayer: {} as any,
-        previewElements: {
-            up: makePreviewEntry(),
-            down: makePreviewEntry(),
-            left: makePreviewEntry(),
-            right,
-        },
-        nextTargets: { up: null, down: null, left: null, right: null },
-        config: { safeAreaMargin: 0 },
-    };
+        const { layer, entries } = makePreviewLayer();
+        const state = createTestState([current, target], {
+            previewEnabled: true,
+            previewLayer: layer,
+            previewElements: entries,
+        });
+        state.currentIndex = 0;
 
-    const candidateEl = {} as any;
-    const findCandidate = (_currentIndex: number, dir: any) => {
-        if (dir?.name === 'right') {
-            return { data: { element: candidateEl }, index: 1 } as any;
-        }
-        return null;
-    };
+        const findCandidate = (_idx: number, dir: Direction): NavigationCandidate | null =>
+            dir.name === 'right'
+                ? ({ data: { element: target }, index: 1 } as unknown as NavigationCandidate)
+                : null;
 
-    updatePreviewVisuals(
-        {} as any,
-        currentRect,
-        findCandidate as any,
-        directionByName as any,
-        () => 'candidate',
-        state
-    );
+        updatePreviewVisuals(
+            current,
+            current.getBoundingClientRect(),
+            findCandidate,
+            directionByName,
+            (el) => (el ? 'candidate' : ''),
+            state
+        );
 
-    // size = clamp(14..26, round(min(100,40)*0.28)=11) => 14
-    // offset = max(10, round(14*0.75)=11) => 11
-    assert.equal((right.container as any).style.left, '211px');
-    assert.equal((right.container as any).style.top, '113px');
-    assert.equal((right.container as any).style.width, '14px');
-    assert.equal((right.container as any).style.height, '14px');
-    assert.equal((right.container as any).className, 'focus-preview focus-preview-right show');
+        // size = clamp(14..26, round(min(100,40)*0.28)=11) → 14
+        // offset = max(10, round(14*0.75)=11) → 11 → right edge 200 + 11 = 211
+        assert.equal(entries.right.container.style.left, '211px');
+        assert.equal(entries.right.container.style.width, '14px');
+        assert.equal(entries.right.container.className, 'focus-preview focus-preview-right show');
+    });
+
+    test('clamps chevrons to safeAreaMargin near the viewport edge', () => {
+        const current = attachElement(
+            createElement({ tagName: 'button', rect: { x: 10, y: 10, width: 50, height: 30 } })
+        );
+        const target = attachElement(
+            createElement({ tagName: 'button', rect: { x: 200, y: 10, width: 50, height: 30 } })
+        );
+
+        teardownDomEnv();
+        setupDomEnv({ innerWidth: 300, innerHeight: 300 });
+
+        const current2 = attachElement(
+            createElement({ tagName: 'button', rect: { x: 10, y: 10, width: 50, height: 30 } })
+        );
+        const target2 = attachElement(
+            createElement({ tagName: 'button', rect: { x: 200, y: 10, width: 50, height: 30 } })
+        );
+        void current;
+        void target;
+
+        const { layer, entries } = makePreviewLayer();
+        const state = createTestState(
+            [current2, target2],
+            {
+                previewEnabled: true,
+                previewLayer: layer,
+                previewElements: entries,
+            },
+            { safeAreaMargin: 20 }
+        );
+        state.currentIndex = 0;
+
+        const findCandidate = (_idx: number, dir: Direction): NavigationCandidate | null =>
+            dir.name === 'left'
+                ? ({ data: { element: target2 }, index: 1 } as unknown as NavigationCandidate)
+                : null;
+
+        updatePreviewVisuals(
+            current2,
+            current2.getBoundingClientRect(),
+            findCandidate,
+            directionByName,
+            (el) => (el ? 'candidate' : ''),
+            state
+        );
+
+        assert.equal(entries.left.container.style.left, '20px');
+        assert.equal(entries.left.container.style.top, '20px');
+        assert.equal(entries.left.container.className, 'focus-preview focus-preview-left show');
+    });
+
+    test('hides the chevron when no candidate exists in that direction', () => {
+        const current = attachElement(
+            createElement({ tagName: 'button', rect: { x: 100, y: 100, width: 100, height: 40 } })
+        );
+
+        const { layer, entries } = makePreviewLayer();
+        const state = createTestState([current], {
+            previewEnabled: true,
+            previewLayer: layer,
+            previewElements: entries,
+        });
+        state.currentIndex = 0;
+
+        updatePreviewVisuals(
+            current,
+            current.getBoundingClientRect(),
+            () => null,
+            directionByName,
+            () => '',
+            state
+        );
+
+        assert.equal(entries.up.container.className, 'focus-preview focus-preview-up');
+        assert.equal(entries.up.container.style.left, '');
+    });
 });
-
-test('updatePreviewVisuals clamps chevrons to safeAreaMargin', () => {
-    setupMockEnv({ innerWidth: 300, innerHeight: 300 });
-
-    const currentRect = {
-        left: 10,
-        top: 10,
-        right: 60,
-        bottom: 40,
-        width: 50,
-        height: 30,
-        x: 10,
-        y: 10,
-        toJSON: () => ({})
-    } as DOMRect;
-
-    const left = makePreviewEntry();
-    const state: any = {
-        currentIndex: 0,
-        focusables: [{ element: {} }],
-        focusableElements: [{}],
-        previewEnabled: true,
-        previewLayer: {} as any,
-        previewElements: {
-            up: makePreviewEntry(),
-            down: makePreviewEntry(),
-            left,
-            right: makePreviewEntry(),
-        },
-        nextTargets: { up: null, down: null, left: null, right: null },
-        config: { safeAreaMargin: 20 },
-    };
-
-    const candidateEl = {} as any;
-    const findCandidate = (_currentIndex: number, dir: any) => {
-        if (dir?.name === 'left') {
-            return { data: { element: candidateEl }, index: 1 } as any;
-        }
-        return null;
-    };
-
-    updatePreviewVisuals(
-        {} as any,
-        currentRect,
-        findCandidate as any,
-        directionByName as any,
-        () => 'candidate',
-        state
-    );
-
-    assert.equal((left.container as any).style.left, '20px');
-    assert.equal((left.container as any).style.top, '20px');
-    assert.equal((left.container as any).className, 'focus-preview focus-preview-left show');
-});
-

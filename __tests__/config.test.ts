@@ -9,7 +9,6 @@ import { getConfig, updateConfig, type SpatialNavConfig } from '../core/config';
 
 // Extend globalThis for test globals
 declare global {
-    // eslint-disable-next-line no-var
     var flutterSpatialNavConfig: Partial<SpatialNavConfig> | undefined;
 }
 
@@ -40,7 +39,7 @@ test('getConfig respects overrides', () => {
         iframeSupport: {
             enabled: true,
             selector: 'iframe.chat-frame',
-            focusMethod: 'contentWindow'
+            focusMethod: 'contentWindow',
         },
         overlayTheme: 'high-contrast',
         safeAreaMargin: 24,

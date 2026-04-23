@@ -11,6 +11,39 @@ export interface Point {
     y: number;
 }
 
+const ZERO_RECT: DOMRect =
+    typeof DOMRect !== 'undefined'
+        ? new DOMRect(0, 0, 0, 0)
+        : ({
+              x: 0,
+              y: 0,
+              width: 0,
+              height: 0,
+              top: 0,
+              right: 0,
+              bottom: 0,
+              left: 0,
+              toJSON: () => ({}),
+          } as DOMRect);
+
+/**
+ * Safe wrapper for `getBoundingClientRect()`.
+ *
+ * Defends against detached nodes / DOM-thrashing during mutation observer
+ * callbacks where calling `getBoundingClientRect()` can throw on some engines.
+ * Returns a zero-sized rect on failure so callers never need to null-check.
+ */
+export function safeGetBoundingClientRect(element: Element | null): DOMRect {
+    if (!element || typeof (element as Element).getBoundingClientRect !== 'function') {
+        return ZERO_RECT;
+    }
+    try {
+        return element.getBoundingClientRect();
+    } catch {
+        return ZERO_RECT;
+    }
+}
+
 /**
  * Resolve the scroll container key for an element.
  * Uses caching to avoid repeated DOM traversals.
@@ -32,8 +65,10 @@ export function resolveScrollKey(element: HTMLElement, state: SpatialNavState): 
                 node.id && node.id.length
                     ? '#' + node.id
                     : node.className && node.className.toString().trim().length
-                        ? node.tagName.toLowerCase() + '.' + node.className.toString().trim().split(/\s+/).slice(0, 2).join('.')
-                        : node.tagName.toLowerCase();
+                      ? node.tagName.toLowerCase() +
+                        '.' +
+                        node.className.toString().trim().split(/\s+/).slice(0, 2).join('.')
+                      : node.tagName.toLowerCase();
             state.scrollCache.set(element, key);
             return key;
         }
@@ -44,26 +79,24 @@ export function resolveScrollKey(element: HTMLElement, state: SpatialNavState): 
 }
 
 /**
- * Calculate the visual bounding rect for an element, potentially expanding 
+ * Calculate the visual bounding rect for an element, potentially expanding
  * it to encompass a larger visual child (logo, image, etc).
  */
 export function calculateVisualRect(element: HTMLElement): DOMRect {
-    let rect = element.getBoundingClientRect();
+    let rect = safeGetBoundingClientRect(element);
 
-    // Expansion: Check if element contains a single visual child that's larger
-    // (Common in logos or image buttons where the hit area is smaller than the asset)
+    // For elements like logos/image-buttons whose hit area is smaller than the
+    // visual asset, expand the rect to cover the larger child. This makes the
+    // focus indicator highlight what the user *sees*, not the tap target.
     const visualChild = element.querySelector('img, svg, video, picture, canvas');
     if (visualChild) {
-        const childRect = visualChild.getBoundingClientRect();
-        // Only expand if the child is actually larger or significantly offset
-        if (childRect.width > rect.width || childRect.height > rect.height ||
-            childRect.left < rect.left || childRect.top < rect.top) {
-
-            if ((window as any).flutterSpatialNavDebug) {
-                // console.log(`[SpatialNav] Expanding visual rect for ${element.tagName} due to child ${visualChild.tagName}: [${childRect.left.toFixed(1)}, ${childRect.top.toFixed(1)}] ${childRect.width.toFixed(1)}x${childRect.height.toFixed(1)}`);
-            }
-            // Return a merged rect or just the child rect if it's the primary visual
-            // For most "logo" cases, the child rect is exactly what we want to highlight
+        const childRect = safeGetBoundingClientRect(visualChild);
+        if (
+            childRect.width > rect.width ||
+            childRect.height > rect.height ||
+            childRect.left < rect.left ||
+            childRect.top < rect.top
+        ) {
             rect = childRect;
         }
     }
@@ -80,9 +113,10 @@ export function updateEntryGeometry(entry: FocusableEntry, state: SpatialNavStat
         return null;
     }
 
-    // Use the base bounding rect for navigation logic (center points, distance, edges)
-    // This keeps navigation intuitive regardless of visual expansion (logos, etc.)
-    const rect = entry.element.getBoundingClientRect();
+    // Use the base bounding rect for navigation logic (center points, distance, edges).
+    // Visual expansion (logos, image-buttons) only affects the overlay rect via
+    // calculateVisualRect; navigation distances stay anchored to the real target.
+    const rect = safeGetBoundingClientRect(entry.element);
 
     entry.left = rect.left;
     entry.top = rect.top;
@@ -118,17 +152,6 @@ export function getCenterPoint(rect: DOMRect): Point {
         x: rect.left + rect.width / 2,
         y: rect.top + rect.height / 2,
     };
-}
-
-/**
- * Calculate Euclidean distance between two rects' centers.
- */
-export function calculateDistance(rect1: DOMRect, rect2: DOMRect): number {
-    const center1 = getCenterPoint(rect1);
-    const center2 = getCenterPoint(rect2);
-    const dx = center2.x - center1.x;
-    const dy = center2.y - center1.y;
-    return Math.sqrt(dx * dx + dy * dy);
 }
 
 /**

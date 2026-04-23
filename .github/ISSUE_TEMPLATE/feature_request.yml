@@ -1,0 +1,36 @@
+name: Feature Request
+description: Suggest an improvement or new capability
+labels: ['enhancement', 'triage']
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve? Link to existing issues or sites where this matters.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? Include API sketches if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Core navigation (scoring, focus groups)
+        - Visual overlay
+        - Native messaging
+        - Accessibility
+        - Documentation
+        - Tooling / CI / build
+        - Other
+    validations:
+      required: true

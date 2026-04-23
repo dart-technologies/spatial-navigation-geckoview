@@ -20,11 +20,7 @@ export type OutboundMessageType =
 /**
  * Message types received from the native layer.
  */
-export type InboundMessageType =
-    | 'configUpdate'
-    | 'navigate'
-    | 'refresh'
-    | 'focusElement';
+export type InboundMessageType = 'configUpdate' | 'navigate' | 'refresh' | 'focusElement';
 
 /**
  * Base message structure for outbound messages.
