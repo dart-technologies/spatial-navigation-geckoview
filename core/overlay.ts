@@ -304,52 +304,79 @@ function updateFocusLabel(
 }
 
 /**
- * Parse color string to extract RGB components for opacity variants.
+ * Clamp a parsed integer channel to [0, 255]. NaN becomes the fallback.
+ *
+ * Centralizing this guarantees every RGB component we interpolate into CSS
+ * is a structurally-inert integer — template concatenation cannot escape
+ * the declaration because the only characters emitted are digits.
  */
-function parseColor(color: string | undefined): RGB {
-    // Default matches DEFAULT_FOCUS_COLOR (#1565C0) in core/config.ts — kept in
-    // sync so a missing/malformed user color doesn't fall back to amber.
-    const defaultRGB: RGB = { r: 21, g: 101, b: 192 };
+function clampByte(n: number, fallback: number): number {
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.min(255, Math.round(n)));
+}
 
+/**
+ * Parse a color string to RGB. Accepts:
+ *   - `#rgb` / `#rrggbb` hex
+ *   - `rgb(r, g, b)` / `rgba(r, g, b, a)`
+ *   - `"r, g, b"` comma-separated triple (the format used for `disabledColor`)
+ *
+ * The return value is three validated integers, so callers interpolating
+ * `${rgb.r}` into a CSS template cannot leak attacker-controlled characters.
+ */
+function parseColor(color: string | undefined, fallback: RGB = { r: 21, g: 101, b: 192 }): RGB {
     if (!color || typeof color !== 'string') {
-        return defaultRGB;
+        return fallback;
     }
 
-    // Handle hex colors
     if (color.startsWith('#')) {
         const hex = color.slice(1);
         if (hex.length === 3) {
             return {
-                r: parseInt(hex[0] + hex[0], 16),
-                g: parseInt(hex[1] + hex[1], 16),
-                b: parseInt(hex[2] + hex[2], 16),
+                r: clampByte(parseInt(hex[0] + hex[0], 16), fallback.r),
+                g: clampByte(parseInt(hex[1] + hex[1], 16), fallback.g),
+                b: clampByte(parseInt(hex[2] + hex[2], 16), fallback.b),
             };
         } else if (hex.length === 6) {
             return {
-                r: parseInt(hex.slice(0, 2), 16),
-                g: parseInt(hex.slice(2, 4), 16),
-                b: parseInt(hex.slice(4, 6), 16),
+                r: clampByte(parseInt(hex.slice(0, 2), 16), fallback.r),
+                g: clampByte(parseInt(hex.slice(2, 4), 16), fallback.g),
+                b: clampByte(parseInt(hex.slice(4, 6), 16), fallback.b),
             };
         }
+        return fallback;
     }
 
-    // Handle rgb/rgba
-    const rgbMatch = color.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    const rgbMatch = color.match(/^\s*rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
     if (rgbMatch) {
         return {
-            r: parseInt(rgbMatch[1], 10),
-            g: parseInt(rgbMatch[2], 10),
-            b: parseInt(rgbMatch[3], 10),
+            r: clampByte(parseInt(rgbMatch[1], 10), fallback.r),
+            g: clampByte(parseInt(rgbMatch[2], 10), fallback.g),
+            b: clampByte(parseInt(rgbMatch[3], 10), fallback.b),
         };
     }
 
-    return defaultRGB;
+    // "r, g, b" comma-separated triple — the historical `disabledColor` format.
+    const tripleMatch = color.match(/^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/);
+    if (tripleMatch) {
+        return {
+            r: clampByte(parseInt(tripleMatch[1], 10), fallback.r),
+            g: clampByte(parseInt(tripleMatch[2], 10), fallback.g),
+            b: clampByte(parseInt(tripleMatch[3], 10), fallback.b),
+        };
+    }
+
+    return fallback;
 }
 
 /**
  * Generate Shadow DOM CSS for overlay and previews.
+ *
+ * @internal — exported for tests only. The adversarial test in
+ * `__tests__/overlay-css.test.ts` exercises the CSS-injection guard on
+ * `disabledColor` and friends.
  */
-function generateShadowCSS(config: SpatialNavConfig): string {
+export function generateShadowCSS(config: SpatialNavConfig): string {
     let rgb = parseColor(config.color);
 
     // Auto-adjust for dark mode
@@ -372,7 +399,11 @@ function generateShadowCSS(config: SpatialNavConfig): string {
     const arrowScale = config.arrowScale || 1.0;
     const arrowWidth = Math.round(8 * arrowScale);
     const arrowLength = Math.round(12 * arrowScale);
-    const disabledColor = config.disabledColor || '128, 128, 128';
+    // Parse `disabledColor` through the same validator as `color` so attacker-
+    // controlled CSS cannot break out of the `:host` declaration. The parser
+    // returns three integers; concatenating them is structurally safe.
+    const disabledRGB = parseColor(config.disabledColor, { r: 128, g: 128, b: 128 });
+    const disabledColor = `${disabledRGB.r}, ${disabledRGB.g}, ${disabledRGB.b}`;
 
     return [
         ':host {',
