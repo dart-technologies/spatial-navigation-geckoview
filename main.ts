@@ -66,7 +66,7 @@ function connectMessaging(state: SpatialNavState): MessagingAdapter {
     // Pick an adapter based on which WebExtension bridge (if any) is available.
     const adapter: MessagingAdapter =
         typeof browser !== 'undefined' && browser?.runtime
-            ? new GeckoViewMessagingAdapter({ nativeAppId: state.config.nativeAppId })
+            ? new GeckoViewMessagingAdapter()
             : new NoopMessagingAdapter();
     messagingAdapter = adapter;
 

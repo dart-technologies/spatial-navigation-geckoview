@@ -25,8 +25,6 @@ export interface AdapterOptions {
     platform?: PlatformType;
     /** Enable verbose logging for the no-op adapter. */
     verbose?: boolean;
-    /** Native-messaging app id, forwarded to {@link GeckoViewMessagingAdapter}. */
-    nativeAppId?: string;
 }
 
 /**
@@ -37,7 +35,7 @@ export function createMessagingAdapter(options: AdapterOptions = {}): MessagingA
 
     switch (platform) {
         case 'geckoview':
-            return new GeckoViewMessagingAdapter({ nativeAppId: options.nativeAppId });
+            return new GeckoViewMessagingAdapter();
 
         case 'react-native':
             log.warn('react-native adapter not yet implemented — using noop');

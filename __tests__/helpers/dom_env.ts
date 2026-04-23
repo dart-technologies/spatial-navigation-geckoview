@@ -322,7 +322,6 @@ export function createTestState(
         wrapNavigation: false,
         useCSSProperties: false,
         minElementSize: 1,
-        nativeAppId: 'flutter_geckoview',
         ...configOverrides,
     };
 

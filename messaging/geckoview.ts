@@ -46,14 +46,16 @@ function getBrowser(): { runtime?: BrowserRuntime } | undefined {
     return undefined;
 }
 
-/** Default native app identifier — override via constructor options. */
-const DEFAULT_NATIVE_APP_ID = 'flutter_geckoview';
+/**
+ * Native-messaging app identifier.
+ *
+ * Hardcoded — NOT configurable from page-visible surface. A web-page-writable
+ * `window.spatialNavConfig.nativeAppId` previously let untrusted content
+ * redirect all outbound native traffic to an attacker-registered host. Keep
+ * this in lockstep with `NATIVE_APP_ID` in `background.ts`.
+ */
+const NATIVE_APP_ID = 'flutter_geckoview';
 const PORT_NAME = 'spatial-nav-content';
-
-export interface GeckoViewMessagingAdapterOptions {
-    /** Native-messaging app id registered on the host side. */
-    nativeAppId?: string;
-}
 
 /** Cap reconnect backoff so a flapping native peer doesn't push delay to infinity. */
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -80,11 +82,9 @@ export class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
     private messageQueue: OutboundMessage[] = [];
     private reconnectAttempts = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    private readonly nativeAppId: string;
 
-    constructor(options: GeckoViewMessagingAdapterOptions = {}) {
+    constructor() {
         super();
-        this.nativeAppId = options.nativeAppId ?? DEFAULT_NATIVE_APP_ID;
     }
 
     isAvailable(): boolean {
@@ -160,11 +160,11 @@ export class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
             }
         }
 
-        // Fallback to sendNativeMessage.
+        // Fallback to sendNativeMessage with the hardcoded app id.
         const b = getBrowser();
         if (b?.runtime?.sendNativeMessage) {
             try {
-                b.runtime.sendNativeMessage(this.nativeAppId, fullMessage);
+                b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
                 return true;
             } catch {
                 this.queueMessage(fullMessage);

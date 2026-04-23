@@ -117,14 +117,6 @@ export interface SpatialNavConfig {
 
     // Element filtering
     minElementSize: number;
-
-    /**
-     * Native app identifier passed to `browser.runtime.sendNativeMessage()`.
-     * The GeckoView host must register a matching native messaging app.
-     * Default is `"flutter_geckoview"` for backwards compatibility with
-     * existing flutter-geckoview hosts.
-     */
-    nativeAppId: string;
 }
 
 export type PartialSpatialNavConfig = Partial<SpatialNavConfig> & {
@@ -345,9 +337,6 @@ export function getConfig(): SpatialNavConfig {
 
         // Element filtering
         minElementSize: typeof userConfig.minElementSize === 'number' ? userConfig.minElementSize : 1,
-
-        // Native app identifier (matches the host app's WebExtension registration).
-        nativeAppId: userConfig.nativeAppId || 'flutter_geckoview',
     };
 }
 
@@ -369,7 +358,7 @@ export function updateConfig(newConfig: PartialSpatialNavConfig): void {
 // Validation
 // =============================================================================
 
-const STRING_KEYS = new Set(['color', 'disabledColor', 'intersectionRootMargin', 'nativeAppId']);
+const STRING_KEYS = new Set(['color', 'disabledColor', 'intersectionRootMargin']);
 const NUMBER_KEYS = new Set([
     'outlineWidth',
     'outlineOffset',

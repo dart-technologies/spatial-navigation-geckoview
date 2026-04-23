@@ -129,6 +129,18 @@ describe('validateUserConfig', () => {
         assert.equal(result.color, '#000');
         assert.equal((result as Record<string, unknown>).totallyMadeUpKey, undefined);
     });
+
+    test('rejects attacker-supplied nativeAppId (trust-boundary fix)', () => {
+        // Web pages must not be able to redirect native messaging to an
+        // attacker-registered app. nativeAppId is not part of the public
+        // config surface — the validator drops it as an unknown key.
+        const result = validateUserConfig({
+            nativeAppId: 'attacker_registered_app',
+            color: '#000',
+        });
+        assert.equal((result as Record<string, unknown>).nativeAppId, undefined);
+        assert.equal(result.color, '#000');
+    });
 });
 
 describe('applyPreset', () => {
