@@ -3,7 +3,9 @@
  *
  * Provides structured logging with:
  * - Build-time DEBUG constant for tree-shaking (replaced by Rollup)
- * - Runtime opt-in via window.SPATIAL_NAV_DEBUG / flutterSpatialNavDebug
+ * - Debug-bundle-only runtime opt-in via window.SPATIAL_NAV_DEBUG /
+ *   flutterSpatialNavDebug (gated on DEBUG so a malicious page can't
+ *   re-enable verbose logs in a production build)
  * - Namespaced loggers for subsystems
  * - Performance timing utilities
  *
@@ -13,7 +15,8 @@
  *   log.debug('Moving focus', { direction: 'down' });
  *
  * Build-time: Rollup replaces `process.env.NODE_ENV` with "production" or "development".
- * Production builds tree-shake debug calls; runtime opt-in still works for live debugging.
+ * Production bundles tree-shake debug calls and the runtime opt-in; only
+ * the debug bundle honours window.SPATIAL_NAV_DEBUG.
  */
 
 /**
@@ -30,11 +33,18 @@ export const DEBUG: boolean = /* @__PURE__ */ (() => {
 })();
 
 /**
- * Runtime debug flag — checked on every log call.
- * Lets users enable verbose logging in a production build by setting
- * `window.SPATIAL_NAV_DEBUG = true` (or the legacy `flutterSpatialNavDebug = true`).
+ * Runtime debug flag — checked on every log call, but ONLY in debug builds.
+ *
+ * In debug bundles (`DEBUG === true`) a developer can set
+ * `window.SPATIAL_NAV_DEBUG = true` (or the legacy `flutterSpatialNavDebug`)
+ * to turn on verbose logging. In production bundles the build-time
+ * `DEBUG` constant is `false`, so this function unconditionally returns
+ * false and the call is dead-code-eliminated by Terser along with the
+ * surrounding `console.log` — pages cannot re-enable verbose logging by
+ * poking a page-visible global.
  */
 function isRuntimeDebugEnabled(): boolean {
+    if (!DEBUG) return false;
     if (typeof window === 'undefined') return false;
     const w = window as { SPATIAL_NAV_DEBUG?: boolean; flutterSpatialNavDebug?: boolean };
     return w.SPATIAL_NAV_DEBUG === true || w.flutterSpatialNavDebug === true;

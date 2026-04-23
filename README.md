@@ -288,16 +288,25 @@ document.addEventListener('spatialNavigationExit', (e) => {
 
 ## Debug logging
 
-Logging is **off by default** in production builds. To enable verbose `[SpatialNav:*]` logs at runtime:
+Logging is **off by default** in production builds.
+
+For verbose `[SpatialNav:*]` logs during development, load the **debug bundle**
+(`extension/spatial_navigation.debug.js`) instead of the minified production
+bundle. In the debug bundle, set `window.SPATIAL_NAV_DEBUG = true` (or the
+legacy `window.flutterSpatialNavDebug`) before the extension content script
+runs:
 
 ```html
 <script>
-  // Set BEFORE the extension's content script runs.
+  // Debug bundle only — has no effect in production builds.
   window.SPATIAL_NAV_DEBUG = true;
 </script>
 ```
 
-Production bundles also drop `console.log/info/debug` calls at minification, so toggling the flag at runtime in a production bundle only re-enables what wasn't tree-shaken (warns/errors stay).
+The production bundle ignores this flag intentionally: page-settable globals
+should not control log emission from a content script that runs on every
+URL. Terser also drops `console.log/info/debug` at minification, so
+`warn`/`error` are the only levels that fire in production.
 
 ## Building
 

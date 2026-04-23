@@ -13,11 +13,19 @@ import { createLogger, DEBUG } from '../utils/logger';
 
 const log = createLogger('Overlay');
 
-/** Returns true when build-time DEBUG is on or runtime opt-in is set. */
+/**
+ * Returns true when build-time DEBUG is on or runtime opt-in is set.
+ *
+ * The runtime check is gated on the build-time `DEBUG` constant so that
+ * production bundles cannot be flipped into debug mode by a malicious
+ * page setting `window.SPATIAL_NAV_DEBUG = true`. Debug mode exposes
+ * runtime labels, a HUD, and focus element descriptions — not sensitive
+ * in isolation, but a page under attack should not be able to enumerate
+ * overlay state regardless.
+ */
 function isDebugActive(): boolean {
     if (DEBUG) return true;
-    if (typeof window === 'undefined') return false;
-    return window.SPATIAL_NAV_DEBUG === true || window.flutterSpatialNavDebug === true;
+    return false;
 }
 
 // Constants
