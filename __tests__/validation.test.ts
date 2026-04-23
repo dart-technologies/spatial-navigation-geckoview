@@ -112,6 +112,27 @@ describe('validateUserConfig', () => {
         assert.equal(result.virtualContainerSelectors, undefined);
     });
 
+    test('caps oversize virtualContainerSelectors array (DoS hardening)', () => {
+        const flood = Array.from({ length: 500 }, (_, i) => `.sel-${i}`);
+        const result = validateUserConfig({ virtualContainerSelectors: flood });
+        assert.ok(
+            result.virtualContainerSelectors !== undefined,
+            'flood is truncated, not dropped'
+        );
+        assert.ok(
+            (result.virtualContainerSelectors ?? []).length <= 32,
+            `expected <= 32 items, got ${(result.virtualContainerSelectors ?? []).length}`
+        );
+    });
+
+    test('drops oversize selector strings but keeps reasonable ones', () => {
+        const huge = 'a'.repeat(500);
+        const result = validateUserConfig({
+            virtualContainerSelectors: ['.ok', huge, '[data-virtual]'],
+        });
+        assert.deepEqual(result.virtualContainerSelectors, ['.ok', '[data-virtual]']);
+    });
+
     test('accepts nested objects for iframeSupport / focusGroups', () => {
         const result = validateUserConfig({
             iframeSupport: { enabled: true, selector: 'iframe.embed' },

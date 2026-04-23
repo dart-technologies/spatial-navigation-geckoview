@@ -412,6 +412,17 @@ const ARRAY_KEYS = new Set(['virtualContainerSelectors']);
 const OBJECT_KEYS = new Set(['iframeSupport', 'focusGroups']);
 
 /**
+ * Per-array caps applied during validation.
+ *
+ * A page setting virtualContainerSelectors to, say, 10,000 complex
+ * selectors would make every DOM mutation trigger a re-scan under each
+ * selector — a CPU DoS vector. Caps chosen generously enough to cover
+ * every legitimate use (the default list is 8 selectors).
+ */
+const ARRAY_MAX_ITEMS = 32;
+const ARRAY_ITEM_MAX_LENGTH = 256;
+
+/**
  * Sanitize an arbitrary user-provided config object.
  *
  * Each key is checked against its expected type; mismatched values are
@@ -470,7 +481,19 @@ export function validateUserConfig(input: unknown): PartialSpatialNavConfig {
 
         if (ARRAY_KEYS.has(key)) {
             if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
-                (out as Record<string, unknown>)[key] = value;
+                // Cap the array to prevent a malicious page from shipping a
+                // thousand CSS selectors that get re-run on every mutation;
+                // and cap each selector length to prevent catastrophic regex
+                // / complex-selector perf attacks via querySelectorAll.
+                const capped = (value as string[])
+                    .slice(0, ARRAY_MAX_ITEMS)
+                    .filter((s) => s.length <= ARRAY_ITEM_MAX_LENGTH);
+                if (capped.length !== value.length) {
+                    log.warn(
+                        `config.${key}: truncated from ${value.length} to ${capped.length} items (caps: ${ARRAY_MAX_ITEMS} items, ${ARRAY_ITEM_MAX_LENGTH} chars each)`
+                    );
+                }
+                (out as Record<string, unknown>)[key] = capped;
             } else {
                 log.warn(`config.${key}: expected string[], got ${typeof value} — ignored`);
             }
