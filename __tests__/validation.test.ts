@@ -8,7 +8,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validateUserConfig, applyPreset, CONFIG_PRESETS, getConfig } from '../core/config';
+import { validateUserConfig, applyPreset, CONFIG_PRESETS, getConfig, directionByName } from '../core/config';
 
 const globalScope = globalThis as { spatialNavConfig?: unknown; flutterSpatialNavConfig?: unknown };
 
@@ -263,5 +263,37 @@ describe('getConfig numeric clamping (hardening)', () => {
         // (they never reach the clamp); belt-and-suspenders verify clamp handles them too.
         globalScope.spatialNavConfig = { overlayZIndex: NaN };
         assert.equal(getConfig().overlayZIndex, 2147483646);
+    });
+});
+
+describe('directionByName prototype safety', () => {
+    test('prototype-chain lookup returns undefined, not a function', () => {
+        // Without a null prototype, `directionByName['__proto__']` would walk
+        // up to Object.prototype and attackers could smuggle a non-Direction
+        // value past `if (map[dir])` checks. Null prototype makes proto
+        // lookups cleanly undefined.
+        const map = directionByName as unknown as Record<string, unknown>;
+        assert.equal(map['__proto__'], undefined, '__proto__ must not resolve');
+        assert.equal(map['constructor'], undefined, 'constructor must not resolve');
+        assert.equal(map['hasOwnProperty'], undefined, 'hasOwnProperty must not resolve');
+        assert.equal(map['toString'], undefined, 'toString must not resolve');
+    });
+
+    test('legitimate direction keys still resolve', () => {
+        assert.equal(directionByName['down'].name, 'down');
+        assert.equal(directionByName['up'].name, 'up');
+        assert.equal(directionByName['left'].name, 'left');
+        assert.equal(directionByName['right'].name, 'right');
+    });
+
+    test('frozen map rejects mutation attempts', () => {
+        // Strict mode throws on assignment to frozen; loose mode silently
+        // fails. Either way the map remains unchanged.
+        try {
+            (directionByName as unknown as Record<string, unknown>)['evil'] = 'payload';
+        } catch {
+            // Expected in strict mode.
+        }
+        assert.equal((directionByName as unknown as Record<string, unknown>)['evil'], undefined);
     });
 });

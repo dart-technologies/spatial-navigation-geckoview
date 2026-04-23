@@ -576,18 +576,27 @@ export function applyPreset(name: PresetName, overrides: PartialSpatialNavConfig
 // Direction maps
 // =============================================================================
 
-export const directionByKey: Record<string, Direction> = {
-    ArrowDown: { axis: 'y', sign: 1, name: 'down' },
-    ArrowUp: { axis: 'y', sign: -1, name: 'up' },
-    ArrowRight: { axis: 'x', sign: 1, name: 'right' },
-    ArrowLeft: { axis: 'x', sign: -1, name: 'left' },
-};
+// Null-prototype + frozen lookup tables. A null prototype means that a
+// page- or native-host-supplied key like `__proto__` or `constructor`
+// yields `undefined` rather than walking up to `Object.prototype` — the
+// caller's `if (map[dir])` guard then correctly short-circuits instead of
+// silently passing a function object into downstream handlers.
+export const directionByKey: Record<string, Direction> = Object.freeze(
+    Object.assign(Object.create(null) as Record<string, Direction>, {
+        ArrowDown: { axis: 'y', sign: 1, name: 'down' } as Direction,
+        ArrowUp: { axis: 'y', sign: -1, name: 'up' } as Direction,
+        ArrowRight: { axis: 'x', sign: 1, name: 'right' } as Direction,
+        ArrowLeft: { axis: 'x', sign: -1, name: 'left' } as Direction,
+    })
+);
 
-export const directionByName: DirectionMap = {
-    down: directionByKey.ArrowDown,
-    up: directionByKey.ArrowUp,
-    right: directionByKey.ArrowRight,
-    left: directionByKey.ArrowLeft,
-};
+export const directionByName: DirectionMap = Object.freeze(
+    Object.assign(Object.create(null) as DirectionMap, {
+        down: directionByKey.ArrowDown,
+        up: directionByKey.ArrowUp,
+        right: directionByKey.ArrowRight,
+        left: directionByKey.ArrowLeft,
+    })
+);
 
 export const directionKeys: DirectionName[] = ['down', 'up', 'right', 'left'];
