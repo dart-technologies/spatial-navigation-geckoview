@@ -225,6 +225,20 @@ const globalScope: typeof globalThis & {
 export const DEFAULT_FOCUS_COLOR = '#1565C0';
 
 /**
+ * Clamp a validated-finite numeric config value into an allowed range,
+ * falling back to the default when the user didn't supply one.
+ *
+ * Used to bound visual-layer values so a malicious page setting e.g.
+ * `overlayZIndex: -1` (hides overlay behind page content) or
+ * `arrowScale: 1e6` (paint-thread DoS via gigantic borders) cannot
+ * produce pathological output.
+ */
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+    return Math.min(Math.max(value, min), max);
+}
+
+/**
  * Get the current spatial navigation configuration.
  * Merges user-provided config with defaults.
  */
@@ -233,26 +247,20 @@ export function getConfig(): SpatialNavConfig {
     const userConfig = validateUserConfig(rawUserConfig as Record<string, unknown>);
 
     return {
-        // Visual styling
+        // Visual styling — numeric values are clamped so malicious config
+        // can't produce invisible overlays (negative z-index), paint-thread
+        // DoS (huge blur/arrow scale), or off-screen overlays (huge margin).
         color: userConfig.color || DEFAULT_FOCUS_COLOR,
-        outlineWidth: userConfig.outlineWidth || 3,
-        outlineOffset: userConfig.outlineOffset || 3,
-        overlayZIndex: userConfig.overlayZIndex || 2147483646,
-        arrowScale: typeof userConfig.arrowScale === 'number' ? userConfig.arrowScale : 1.0,
+        outlineWidth: clampNumber(userConfig.outlineWidth, 1, 20, 3),
+        outlineOffset: clampNumber(userConfig.outlineOffset, 0, 50, 3),
+        overlayZIndex: clampNumber(userConfig.overlayZIndex, 1, 2147483646, 2147483646),
+        arrowScale: clampNumber(userConfig.arrowScale, 0.1, 4, 1.0),
         disabledColor: userConfig.disabledColor || '128, 128, 128',
         overlayTheme: userConfig.overlayTheme === 'high-contrast' ? 'high-contrast' : 'default',
-        safeAreaMargin:
-            typeof userConfig.safeAreaMargin === 'number' ? Math.max(0, userConfig.safeAreaMargin) : 12,
-        overlayScrimOpacity:
-            typeof userConfig.overlayScrimOpacity === 'number'
-                ? Math.min(Math.max(userConfig.overlayScrimOpacity, 0), 1)
-                : 0.06,
-        overlayGlowOpacity:
-            typeof userConfig.overlayGlowOpacity === 'number'
-                ? Math.min(Math.max(userConfig.overlayGlowOpacity, 0), 1)
-                : 0.35,
-        overlayGlowBlur:
-            typeof userConfig.overlayGlowBlur === 'number' ? Math.max(0, userConfig.overlayGlowBlur) : 14,
+        safeAreaMargin: clampNumber(userConfig.safeAreaMargin, 0, 200, 12),
+        overlayScrimOpacity: clampNumber(userConfig.overlayScrimOpacity, 0, 1, 0.06),
+        overlayGlowOpacity: clampNumber(userConfig.overlayGlowOpacity, 0, 1, 0.35),
+        overlayGlowBlur: clampNumber(userConfig.overlayGlowBlur, 0, 64, 14),
 
         // Dynamic content observation
         observeMutations: userConfig.observeMutations !== false,

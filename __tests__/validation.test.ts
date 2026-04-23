@@ -209,3 +209,59 @@ describe('getConfig with default color', () => {
         assert.equal(cfg.color, '#1565C0', 'default is contrast-safe blue, not amber');
     });
 });
+
+describe('getConfig numeric clamping (hardening)', () => {
+    test('overlayZIndex negative falls to min (overlay stays on top)', () => {
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { overlayZIndex: -1 };
+        const cfg = getConfig();
+        assert.equal(cfg.overlayZIndex, 1, 'negative clamped up to min, preserving focus visibility');
+    });
+
+    test('overlayZIndex above int32 clamped to max', () => {
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { overlayZIndex: Number.MAX_SAFE_INTEGER };
+        const cfg = getConfig();
+        assert.equal(cfg.overlayZIndex, 2147483646);
+    });
+
+    test('arrowScale extreme values clamped', () => {
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { arrowScale: 1e6 };
+        assert.equal(getConfig().arrowScale, 4);
+
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { arrowScale: 0.0001 };
+        assert.equal(getConfig().arrowScale, 0.1);
+
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { arrowScale: -5 };
+        assert.equal(getConfig().arrowScale, 0.1);
+    });
+
+    test('safeAreaMargin huge value clamped (overlay stays on screen)', () => {
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { safeAreaMargin: 99999 };
+        assert.equal(getConfig().safeAreaMargin, 200);
+    });
+
+    test('overlayGlowBlur huge value clamped (prevents paint DoS)', () => {
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { overlayGlowBlur: 10000 };
+        assert.equal(getConfig().overlayGlowBlur, 64);
+    });
+
+    test('outlineWidth extreme values clamped', () => {
+        clearGlobalConfig();
+        globalScope.spatialNavConfig = { outlineWidth: 500 };
+        assert.equal(getConfig().outlineWidth, 20);
+    });
+
+    test('NaN and Infinity fall to default', () => {
+        clearGlobalConfig();
+        // NaN/Infinity are filtered out by validateUserConfig's Number.isFinite check
+        // (they never reach the clamp); belt-and-suspenders verify clamp handles them too.
+        globalScope.spatialNavConfig = { overlayZIndex: NaN };
+        assert.equal(getConfig().overlayZIndex, 2147483646);
+    });
+});
