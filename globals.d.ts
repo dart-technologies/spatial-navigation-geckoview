@@ -63,6 +63,7 @@ declare global {
         __SPATIAL_NAV_KEYDOWN_COUNT__?: number;
         __SPATIAL_NAV_LAST_KEY_TIME__?: number;
         __SPATIAL_NAV_LAST_KEY__?: string;
+        __spatnavModalityWatcherAttached?: boolean;
 
         // Framework detection hooks
         __REACT_DEVTOOLS_GLOBAL_HOOK__?: unknown;

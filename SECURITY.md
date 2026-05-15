@@ -4,11 +4,11 @@
 
 Security fixes are backported only to the latest minor release in each major version line.
 
-| Version | Supported | Notes                                                                                            |
-| ------- | --------- | ------------------------------------------------------------------------------------------------ |
-| 3.0.x   | ✅        | Active. 3.0.1 ships eight hardening fixes (see [CHANGELOG](CHANGELOG.md#301--2026-05-15)).       |
+| Version | Supported | Notes                                                                                                     |
+| ------- | --------- | --------------------------------------------------------------------------------------------------------- |
+| 3.0.x   | ✅        | Active. 3.0.1 ships eight hardening fixes (see [CHANGELOG](CHANGELOG.md#301--2026-05-15)).                |
 | 3.0.0   | ⚠️        | Superseded. Upgrade to 3.0.1 — 3.0.0 has CSS injection, DoS, and info-disclosure surfaces fixed in 3.0.1. |
-| < 3.0   | ❌        | Internal pre-public builds embedded in flutter-geckoview. Not supported standalone.              |
+| < 3.0   | ❌        | Internal pre-public builds embedded in flutter-geckoview. Not supported standalone.                       |
 
 ## Reporting a vulnerability
 

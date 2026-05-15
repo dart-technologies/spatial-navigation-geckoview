@@ -123,8 +123,10 @@ export default [
         plugins: productionPlugins(),
     },
 
-    // GeckoView extension IIFE bundle — emitted to BOTH dist/ and extension/
-    // so consumers loading the extension folder directly get a fresh build.
+    // GeckoView extension IIFE bundle — emitted to dist/, extension/, and the
+    // Playwright e2e fixtures folder so consumers loading the extension folder
+    // directly, and the e2e suite, all run the same freshly-built code. The
+    // e2e fixture used to be hand-maintained and silently drifted from source.
     {
         input: 'main.ts',
         output: [
@@ -136,6 +138,12 @@ export default [
             },
             {
                 file: 'extension/spatial_navigation.js',
+                format: 'iife',
+                name: 'SpatialNavigation',
+                strict: true,
+            },
+            {
+                file: 'e2e/fixtures/spatial-navigation.js',
                 format: 'iife',
                 name: 'SpatialNavigation',
                 strict: true,

@@ -422,7 +422,7 @@ export function generateShadowCSS(config: SpatialNavConfig): string {
         `  --sn-scrim-alpha: ${config.overlayScrimOpacity};`,
         `  --sn-glow-alpha: ${config.overlayGlowOpacity};`,
         `  --sn-glow-blur: ${config.overlayGlowBlur}px;`,
-        '  --sn-inner-glow-alpha: 0.16;',
+        `  --sn-inner-glow-alpha: ${config.overlayInnerGlowOpacity};`,
         '  --sn-label-bg: rgba(0, 0, 0, 0.62);',
         '  --sn-label-fg: rgba(255, 255, 255, 0.92);',
         '  --sn-label-muted: rgba(255, 255, 255, 0.72);',
@@ -439,7 +439,17 @@ export function generateShadowCSS(config: SpatialNavConfig): string {
         '  pointer-events: none;',
         '  overflow: visible;',
         '  will-change: left, top, width, height, border-radius, opacity, transform;',
-        '  transition: left 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), top 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), width 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), height 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), border-radius 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), opacity 0.12s ease-out, transform 0.12s ease-out;',
+        // Position properties (left/top/width/height/border-radius) are
+        // NOT transitioned: every position write happens during either
+        // a navigation move (jumps to a new focusable) or scroll-
+        // tracking (page smooth-scrolls, ring must follow 1:1). In
+        // both cases the apparent motion is dominated by the page or
+        // the focus jump, NOT by an easing curve — adding a 140ms
+        // position transition produced a visible "ring slides off and
+        // returns to settle" lag against the actual element motion.
+        // Opacity + transform stay transitioned so fade-in / fade-out
+        // and the show-scale pop-in remain smooth.
+        '  transition: opacity 0.12s ease-out, transform 0.12s ease-out;',
         `  outline: ${config.outlineWidth}px solid rgb(var(--sn-focus-rgb));`,
         `  outline-offset: ${config.outlineOffset}px;`,
         `  background-color: rgba(var(--sn-focus-rgb), var(--sn-scrim-alpha));`,
@@ -505,6 +515,14 @@ export function generateShadowCSS(config: SpatialNavConfig): string {
         '}',
         `#${focusOverlayId}.visible {`,
         '  opacity: 1;',
+        '}',
+        // `.snap` is applied for one frame by `showOverlay` when the
+        // new position is a big jump (cross-viewport navigation). The
+        // overlay snaps to the new coords without animating through
+        // the empty intervening space, then the transition is
+        // restored for subsequent scroll-tracking updates.
+        `#${focusOverlayId}.snap {`,
+        '  transition: none !important;',
         '}',
         `#${focusOverlayId}.click-animate {`,
         '  transform: scale(0.96) !important;',
@@ -603,6 +621,28 @@ export function generateShadowCSS(config: SpatialNavConfig): string {
         '    animation: none;',
         '  }',
         '}',
+        // Visibility gate — when `visibilityMode === 'hardware-nav-only'`,
+        // hide the entire shadow subtree (ring + previews + label + HUD)
+        // by default and reveal only when the host writes
+        // `data-modality="hardware-nav" data-ring="visible"` on
+        // `#spatnav-focus-host`. The host is responsible for writing
+        // the attributes; the wrapper (e.g. `FocusStyleManager`) does
+        // this from its touch-aware state machine. Default-hidden so a
+        // missing attribute keeps the overlay invisible — fail-safe.
+        ...(config.visibilityMode === 'hardware-nav-only'
+            ? [
+                  ':host {',
+                  '  opacity: 0;',
+                  '  transition: opacity 220ms cubic-bezier(0.2, 0, 0, 1);',
+                  '}',
+                  ':host([data-modality="hardware-nav"][data-ring="visible"]) {',
+                  '  opacity: 1;',
+                  '}',
+                  '@media (prefers-reduced-motion: reduce) {',
+                  '  :host { transition: none; }',
+                  '}',
+              ]
+            : []),
     ].join('\n');
 }
 
@@ -612,6 +652,15 @@ export function generateShadowCSS(config: SpatialNavConfig): string {
  */
 export function showOverlay(element: HTMLElement | null, state: SpatialNavState, pulse = false): void {
     if (!state.overlay || !element) {
+        // [diag] log.info survives the debug bundle. Switch the plugin
+        // asset bundle to spatial_navigation.debug.js to capture these
+        // via adb logcat | grep SpatialNav while debugging the
+        // "ring vanishes mid-scroll" bug.
+        log.info('showOverlay(null) — clearing visible class', {
+            hasOverlay: !!state.overlay,
+            hasElement: !!element,
+            overlaySuppressed: state.overlaySuppressed,
+        });
         if (state.overlay) {
             state.overlay.classList.remove('visible');
         }
@@ -628,6 +677,15 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
     const rect = calculateVisualRect(element);
     const overlay = state.overlay;
 
+    // [diag] Snapshot of the inputs to the position-write inlined in
+    // the message string — Gecko's console pipe stringifies the data
+    // object as `[object Object]`, hiding the values when read via
+    // adb logcat. The inline form survives the pipe.
+    const tag = element.tagName.toLowerCase() + (element.id ? '#' + element.id : '');
+    log.info(
+        `showOverlay(target=${tag}) rect=[L=${rect.left.toFixed(1)} T=${rect.top.toFixed(1)} R=${rect.right.toFixed(1)} B=${rect.bottom.toFixed(1)}] W×H=${rect.width.toFixed(1)}×${rect.height.toFixed(1)} VP=${window.innerWidth}×${window.innerHeight} scrollY=${window.scrollY} prev=(${overlay.style.left || '?'},${overlay.style.top || '?'}) wasVisible=${overlay.classList.contains('visible')} wasSnap=${overlay.classList.contains('snap')}`
+    );
+
     // Match element's border-radius
     const computed = window.getComputedStyle(element);
     const borderRadius = computed.borderRadius || '4px';
@@ -636,8 +694,17 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
     const config = state.config;
     const outlineOffset = config.outlineOffset || 3;
     const outlineWidth = config.outlineWidth || 3;
-    const safeAreaMargin = Math.max(0, config.safeAreaMargin ?? 0);
-    const totalMargin = outlineWidth + outlineOffset + 2 + safeAreaMargin; // Extra safety buffer
+    // The overlay used to inset by `outlineWidth + outlineOffset + 2 +
+    // safeAreaMargin`, which produced visibly-short rings around content
+    // touching the viewport edge — a hero image flush against the left
+    // side rendered with a 20px gap on its left, looking like the
+    // outline was cropped mid-stroke. The new policy: clamp ONLY to
+    // keep the outline stroke itself visible (outlineWidth + outlineOffset
+    // pixels can extend outside the viewport before the stroke vanishes).
+    // `safeAreaMargin` is intentionally NOT applied to the ring — it
+    // remains a floating-UI inset for chevrons / labels only. Edge-flush
+    // content now renders edge-flush rings, matching user perception.
+    const outlineExtent = outlineWidth + outlineOffset;
 
     log.debug(`overlay positioned on ${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}`, {
         L: rect.left.toFixed(1),
@@ -646,23 +713,120 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
         H: rect.height.toFixed(1),
     });
 
+    // Clamp only enough to keep the outline visible. CSS `outline` paints
+    // outside the box, so the stroke can extend up to `outlineExtent` px
+    // past the viewport edge and still partially render. Clamping the
+    // box position by `-outlineExtent` keeps a sliver visible at the
+    // hard edge case without insetting away from edge-flush content.
+    const clampedLeft = Math.max(-outlineExtent, rect.left);
+    const clampedTop = Math.max(-outlineExtent, rect.top);
+    const clampedRight = Math.min(window.innerWidth + outlineExtent, rect.right);
+    const clampedBottom = Math.min(window.innerHeight + outlineExtent, rect.bottom);
+
+    // If the clamped box has non-positive dimensions, the focused
+    // element is fully outside the viewport (mid-scroll into an
+    // off-screen navigation target, or page scrolled past the focused
+    // element while focus stayed put).
+    //
+    // Earlier patches tried to handle this by either letting the
+    // negative dimensions produce a CSS 0×0 box (invisible) or
+    // explicitly removing the `visible` class. Both produced the
+    // user-reported "focus ring vanishes after viewport shift" bug
+    // because the ring abruptly disappeared mid-scroll.
+    //
+    // The correct behaviour is to keep the overlay rendered at the
+    // element's REAL viewport-space coordinates (which may be off-
+    // screen) so the browser clips it naturally. As the page scrolls,
+    // the overlay tracks the element off-screen and back on the same
+    // motion path — the user perceives a single smooth slide instead
+    // of a vanish/reappear.
+    const fullyOffViewport = clampedRight <= clampedLeft || clampedBottom <= clampedTop;
+    const renderLeft = fullyOffViewport ? rect.left : clampedLeft;
+    const renderTop = fullyOffViewport ? rect.top : clampedTop;
+    const renderWidth = fullyOffViewport ? Math.max(rect.width, 1) : clampedRight - clampedLeft;
+    const renderHeight = fullyOffViewport ? Math.max(rect.height, 1) : clampedBottom - clampedTop;
+
+    if (fullyOffViewport) {
+        // [diag] Path matters: fully-off-viewport elements used to be
+        // hidden which produced the user-reported vanish. We now render
+        // at raw rect coords and let the browser clip.
+        log.info('showOverlay: fully-off-viewport — render at raw rect (browser clips)', {
+            renderLeft: renderLeft.toFixed(1),
+            renderTop: renderTop.toFixed(1),
+            renderWidth: renderWidth.toFixed(1),
+            renderHeight: renderHeight.toFixed(1),
+            direction:
+                rect.top > window.innerHeight
+                    ? 'below'
+                    : rect.bottom < 0
+                      ? 'above'
+                      : rect.left > window.innerWidth
+                        ? 'right'
+                        : 'left',
+        });
+    }
+
+    // Big position jumps (cross-viewport navigation, e.g. user pressed
+    // Down on the last visible focusable and we navigated to an
+    // off-screen target via pass-2 scoring) should NOT animate the
+    // overlay through the empty intervening space. Detect a big jump
+    // by comparing the new top/left against the previous render and
+    // snap (disable transition for one frame) when the delta exceeds
+    // a viewport-derived threshold. Within-viewport nudges still
+    // animate smoothly via the default CSS transition.
+    //
+    // IMPORTANT: capture `overlayWasHidden` BEFORE adding the `visible`
+    // class — re-entering visibility from a hidden state is always a
+    // snap because there's no meaningful previous render to animate
+    // from. Also snap whenever we cross the in-viewport ↔ off-viewport
+    // threshold — the apparent motion of the overlay is dominated by
+    // the page scroll, not by an easing curve.
+    const SNAP_THRESHOLD_PX = 200;
+    const prevLeft = parseFloat(overlay.style.left || '0');
+    const prevTop = parseFloat(overlay.style.top || '0');
+    const overlayWasHidden = !overlay.classList.contains('visible');
+    const jumped =
+        overlayWasHidden ||
+        fullyOffViewport ||
+        Math.abs(renderLeft - prevLeft) > SNAP_THRESHOLD_PX ||
+        Math.abs(renderTop - prevTop) > SNAP_THRESHOLD_PX;
+    if (jumped) {
+        const reason = overlayWasHidden
+            ? 'wasHidden'
+            : fullyOffViewport
+              ? 'fullyOffViewport'
+              : `delta>${SNAP_THRESHOLD_PX}px`;
+        log.info(
+            `showOverlay: snap applied (reason=${reason}, dL=${Math.abs(renderLeft - prevLeft).toFixed(1)}, dT=${Math.abs(renderTop - prevTop).toFixed(1)})`
+        );
+        overlay.classList.add('snap');
+        // Re-enable the transition on the next frame after the new
+        // position has been committed. Using TWO rAF ticks ensures the
+        // browser has computed layout with `transition: none` before
+        // we restore the easing-based transition.
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                overlay.classList.remove('snap');
+            });
+        });
+    }
+
     overlay.style.display = 'block';
     overlay.classList.add('visible');
 
-    // Apply positions with viewport clamping to prevent outline from being cut at edges
-    const left = Math.max(totalMargin, rect.left);
-    const top = Math.max(totalMargin, rect.top);
-    const right = Math.min(window.innerWidth - totalMargin, rect.right);
-    const bottom = Math.min(window.innerHeight - totalMargin, rect.bottom);
-
-    overlay.style.left = left + 'px';
-    overlay.style.top = top + 'px';
-    overlay.style.width = right - left + 'px';
-    overlay.style.height = bottom - top + 'px';
+    overlay.style.left = renderLeft + 'px';
+    overlay.style.top = renderTop + 'px';
+    overlay.style.width = renderWidth + 'px';
+    overlay.style.height = renderHeight + 'px';
     overlay.style.borderRadius = effectiveRadius;
 
     updateDebugHud(state);
-    updateFocusLabel(state, element, { left, top, width: right - left, height: bottom - top });
+    updateFocusLabel(state, element, {
+        left: renderLeft,
+        top: renderTop,
+        width: renderWidth,
+        height: renderHeight,
+    });
 
     // Remove native focus outline
     try {
@@ -672,7 +836,11 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
         // ignore
     }
 
-    if (pulse) {
+    // The `.pulse` keyframe animation hardcodes the legacy amber
+    // `rgba(255, 193, 7, …)` fallback and clashes with the
+    // Material-Blue-800 default — gated on `enableFocusPulse` so hosts
+    // that customise their ring colour can opt back in.
+    if (pulse && state.config.enableFocusPulse) {
         overlay.classList.remove('pulse');
         void overlay.offsetWidth;
         overlay.classList.add('pulse');
@@ -691,16 +859,16 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
                 // FIX: Use calculateVisualRect here too to maintain the logo/image expansion
                 const newRect = calculateVisualRect(element);
 
-                // Also apply clamping here for consistency
+                // Use the same edge-flush clamp policy as the main path
+                // (see comment in `showOverlay` above for rationale).
                 const outlineOffset = state.config.outlineOffset || 3;
                 const outlineWidth = state.config.outlineWidth || 3;
-                const safeAreaMargin = Math.max(0, state.config.safeAreaMargin ?? 0);
-                const totalMargin = outlineWidth + outlineOffset + 2 + safeAreaMargin;
+                const outlineExtent = outlineWidth + outlineOffset;
 
-                const left = Math.max(totalMargin, newRect.left);
-                const top = Math.max(totalMargin, newRect.top);
-                const right = Math.min(window.innerWidth - totalMargin, newRect.right);
-                const bottom = Math.min(window.innerHeight - totalMargin, newRect.bottom);
+                const left = Math.max(-outlineExtent, newRect.left);
+                const top = Math.max(-outlineExtent, newRect.top);
+                const right = Math.min(window.innerWidth + outlineExtent, newRect.right);
+                const bottom = Math.min(window.innerHeight + outlineExtent, newRect.bottom);
 
                 overlay.style.left = left + 'px';
                 overlay.style.top = top + 'px';
@@ -717,6 +885,14 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
  * Hide the focus overlay.
  */
 export function hideOverlay(state: SpatialNavState): void {
+    // [diag] Every code path that removes the `visible` class lands here
+    // OR in `showOverlay(null)`. If you're chasing a "ring vanishes"
+    // bug, the call site appears just above this line in the stack.
+    log.info('hideOverlay() — removing visible class', {
+        wasVisible: state.overlay?.classList.contains('visible'),
+        overlaySuppressed: state.overlaySuppressed,
+        stack: new Error('hideOverlay call site').stack?.split('\n').slice(1, 4).join(' | '),
+    });
     if (state.overlay) {
         state.overlay.classList.remove('visible');
     }

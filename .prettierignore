@@ -3,6 +3,7 @@ dist/
 extension/spatial_navigation.js
 extension/spatial_navigation.debug.js
 extension/background.js
+e2e/fixtures/spatial-navigation.js
 playwright-report/
 e2e/visual.spec.ts-snapshots/
 package-lock.json

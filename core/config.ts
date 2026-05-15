@@ -50,6 +50,37 @@ export interface FocusGroupsConfig {
     boundaryBehavior: BoundaryBehavior;
 }
 
+/**
+ * Controls when the focus ring (and the rest of the shadow subtree —
+ * preview chevrons, label, debug HUD) is visible.
+ *
+ * - `always`: legacy default. The overlay is visible whenever the
+ *   extension renders it. Suitable for kiosks / fixed hardware-nav
+ *   devices that never receive touch input.
+ * - `hardware-nav-only`: the host writes `data-modality` / `data-ring`
+ *   attributes on the shadow host (`#spatnav-focus-host`); the overlay
+ *   is hidden unless modality is `hardware-nav` AND ring is `visible`.
+ *   This is the right default for any host that wants touch-aware
+ *   focus rings (browser-style apps).
+ */
+export type OverlayVisibilityMode = 'always' | 'hardware-nav-only';
+
+/**
+ * Behaviour when a directional press reaches a boundary (no in-DOM
+ * focusable target in that direction).
+ *
+ * - `exit`: legacy default. Dispatch `spatialNavigationExit` on
+ *   `document` and post `focusExit` to the native host. The host
+ *   decides what to do (e.g. forward focus to a Flutter widget).
+ * - `scroll`: scroll the page by half a viewport in the direction
+ *   (only vertical — horizontal page scroll is rare and would feel
+ *   wrong). Then suppress the exit notification. After the scroll
+ *   settles, the user's next press has new focusables to land on.
+ * - `none`: silent. No exit dispatch, no scroll. Suitable for hosts
+ *   that handle boundary recovery themselves.
+ */
+export type BoundaryScrollBehavior = 'exit' | 'scroll' | 'none';
+
 export interface SpatialNavConfig {
     // Visual styling
     color: string;
@@ -63,6 +94,38 @@ export interface SpatialNavConfig {
     overlayScrimOpacity: number;
     overlayGlowOpacity: number;
     overlayGlowBlur: number;
+    /**
+     * Opacity of the inset 1px highlight rendered inside the focus
+     * outline (`--sn-inner-glow-alpha`). Set to `0` to drop the inset
+     * highlight entirely — useful for hosts that want a pure outline
+     * without decorative chrome.
+     *
+     * Range `[0, 1]`, default `0.16`.
+     */
+    overlayInnerGlowOpacity: number;
+    /**
+     * Controls when the focus ring + previews are rendered. See
+     * [OverlayVisibilityMode]. Default `always` for back-compat;
+     * touch-aware hosts (browsers) should set `hardware-nav-only`.
+     */
+    visibilityMode: OverlayVisibilityMode;
+    /**
+     * Enable the legacy `.pulse` keyframe animation on the focus ring
+     * (a small expanding box-shadow ripple). Default `false` — the
+     * animation hardcoded amber `rgba(255, 193, 7, …)` from the
+     * pre-WCAG-migration era and clashes with the Material Blue 800
+     * default focus colour. Enable only if your config sets a custom
+     * `color` AND you want the pulse.
+     */
+    enableFocusPulse: boolean;
+    /**
+     * Behaviour when a directional press reaches a boundary. See
+     * [BoundaryScrollBehavior]. Defaults to `'scroll'` as of v3.1.0 so a
+     * directional press at the viewport edge of a long page scrolls into
+     * view instead of dropping the keystroke; set `'exit'` to keep the
+     * legacy 3.0.x focus-exit-on-boundary behaviour.
+     */
+    boundaryScrollBehavior: BoundaryScrollBehavior;
 
     // Dynamic content observation
     observeMutations: boolean;
@@ -261,6 +324,19 @@ export function getConfig(): SpatialNavConfig {
         overlayScrimOpacity: clampNumber(userConfig.overlayScrimOpacity, 0, 1, 0.06),
         overlayGlowOpacity: clampNumber(userConfig.overlayGlowOpacity, 0, 1, 0.35),
         overlayGlowBlur: clampNumber(userConfig.overlayGlowBlur, 0, 64, 14),
+        overlayInnerGlowOpacity: clampNumber(userConfig.overlayInnerGlowOpacity, 0, 1, 0.16),
+        visibilityMode: userConfig.visibilityMode === 'hardware-nav-only' ? 'hardware-nav-only' : 'always',
+        enableFocusPulse: userConfig.enableFocusPulse === true,
+        // Default to `'scroll'` so a directional press at a viewport
+        // boundary on a long page scrolls into view instead of silently
+        // dropping the keystroke. Hosts that want the legacy
+        // exit-to-native behaviour can set `'exit'`.
+        boundaryScrollBehavior:
+            userConfig.boundaryScrollBehavior === 'exit'
+                ? 'exit'
+                : userConfig.boundaryScrollBehavior === 'none'
+                  ? 'none'
+                  : 'scroll',
 
         // Dynamic content observation
         observeMutations: userConfig.observeMutations !== false,
@@ -376,6 +452,7 @@ const NUMBER_KEYS = new Set([
     'overlayScrimOpacity',
     'overlayGlowOpacity',
     'overlayGlowBlur',
+    'overlayInnerGlowOpacity',
     'mutationDebounce',
     'scrollThreshold',
     'intersectionThreshold',
@@ -401,13 +478,23 @@ const BOOLEAN_KEYS = new Set([
     'precomputeCandidates',
     'wrapNavigation',
     'useCSSProperties',
+    'enableFocusPulse',
 ]);
-const ENUM_KEYS: Record<string, ReadonlySet<string>> = {
-    overlayTheme: new Set(['default', 'high-contrast']),
-    refocusStrategy: new Set(['closest', 'first']),
-    scoringMode: new Set(['geometric', 'grid']),
-    distanceFunction: new Set(['euclidean', 'manhattan', 'projected']),
-};
+// Null-prototype lookup so attacker keys like `toString` / `hasOwnProperty`
+// don't resolve to Object.prototype methods via the prototype chain — that
+// would make `ENUM_KEYS[key].has(value)` throw TypeError, propagate uncaught
+// out of getConfig(), and abort initSpatialNavigation entirely.
+const ENUM_KEYS: Record<string, ReadonlySet<string>> = Object.assign(
+    Object.create(null) as Record<string, ReadonlySet<string>>,
+    {
+        overlayTheme: new Set(['default', 'high-contrast']),
+        refocusStrategy: new Set(['closest', 'first']),
+        scoringMode: new Set(['geometric', 'grid']),
+        distanceFunction: new Set(['euclidean', 'manhattan', 'projected']),
+        visibilityMode: new Set(['always', 'hardware-nav-only']),
+        boundaryScrollBehavior: new Set(['exit', 'scroll', 'none']),
+    }
+);
 const ARRAY_KEYS = new Set(['virtualContainerSelectors']);
 const OBJECT_KEYS = new Set(['iframeSupport', 'focusGroups']);
 
@@ -421,6 +508,85 @@ const OBJECT_KEYS = new Set(['iframeSupport', 'focusGroups']);
  */
 const ARRAY_MAX_ITEMS = 32;
 const ARRAY_ITEM_MAX_LENGTH = 256;
+
+/**
+ * Per-key numeric ranges enforced at validation time.
+ *
+ * The clamps live here (not just in getConfig) so every entry point —
+ * getConfig(), updateConfig(), and the native `configUpdate` handler —
+ * gets uniform schema enforcement. Otherwise a native push of e.g.
+ * `{ safeAreaMargin: 99999 }` would slip through `validateUserConfig`'s
+ * type-only check and land in `state.config` unclamped.
+ */
+const NUMBER_RANGES: Record<string, { min: number; max: number }> = Object.assign(
+    Object.create(null) as Record<string, { min: number; max: number }>,
+    {
+        // Visual styling
+        outlineWidth: { min: 1, max: 20 },
+        outlineOffset: { min: 0, max: 50 },
+        overlayZIndex: { min: 1, max: 2147483646 },
+        arrowScale: { min: 0.1, max: 4 },
+        safeAreaMargin: { min: 0, max: 200 },
+        overlayScrimOpacity: { min: 0, max: 1 },
+        overlayGlowOpacity: { min: 0, max: 1 },
+        overlayGlowBlur: { min: 0, max: 64 },
+        overlayInnerGlowOpacity: { min: 0, max: 1 },
+        // Observers and timers (DoS guard — caps at 5s except cache timeout at 1min)
+        mutationDebounce: { min: 0, max: 5_000 },
+        scrollThreshold: { min: 0, max: 1_000 },
+        virtualScrollDebounce: { min: 0, max: 5_000 },
+        precomputeCacheTimeout: { min: 0, max: 60_000 },
+        intersectionThreshold: { min: 0, max: 1 },
+        // Scoring thresholds (geometric — capped at 4096px which is well above
+        // any plausible viewport edge)
+        overlapThreshold: { min: 0, max: 4_096 },
+        gridAlignmentTolerance: { min: 0, max: 4_096 },
+        minElementSize: { min: 0, max: 4_096 },
+    }
+);
+
+/**
+ * Per-key schemas for nested-object config values. Each validator strips
+ * unknown fields and clamps each known field to its declared type/enum.
+ *
+ * Without this, a page could ship e.g.
+ * `{ iframeSupport: { __proto__: { polluted: true } } }` and the un-checked
+ * object would land verbatim in `state.config`. The shallow object-shape
+ * check in OBJECT_KEYS handling is not enough.
+ */
+const NESTED_VALIDATORS: Record<string, (raw: Record<string, unknown>) => Record<string, unknown>> =
+    Object.assign(Object.create(null) as Record<string, never>, {
+        iframeSupport: (raw: Record<string, unknown>) => {
+            const allowedFocusMethods = new Set(['element', 'contentWindow']);
+            const cleaned: Record<string, unknown> = {};
+            if (typeof raw.enabled === 'boolean') cleaned.enabled = raw.enabled;
+            if (typeof raw.selector === 'string' && raw.selector.length <= ARRAY_ITEM_MAX_LENGTH) {
+                cleaned.selector = raw.selector;
+            }
+            if (typeof raw.focusMethod === 'string' && allowedFocusMethods.has(raw.focusMethod)) {
+                cleaned.focusMethod = raw.focusMethod;
+            }
+            return cleaned;
+        },
+        focusGroups: (raw: Record<string, unknown>) => {
+            const allowedBoundary = new Set(['wrap', 'stop', 'exit']);
+            const cleaned: Record<string, unknown> = {};
+            if (typeof raw.enabled === 'boolean') cleaned.enabled = raw.enabled;
+            if (typeof raw.boundaryBehavior === 'string' && allowedBoundary.has(raw.boundaryBehavior)) {
+                cleaned.boundaryBehavior = raw.boundaryBehavior;
+            }
+            // defaultRules is a freeform map; pass through only if it's a
+            // plain object (no Array, no null), without touching keys.
+            if (
+                raw.defaultRules &&
+                typeof raw.defaultRules === 'object' &&
+                !Array.isArray(raw.defaultRules)
+            ) {
+                cleaned.defaultRules = raw.defaultRules;
+            }
+            return cleaned;
+        },
+    });
 
 /**
  * Sanitize an arbitrary user-provided config object.
@@ -451,7 +617,10 @@ export function validateUserConfig(input: unknown): PartialSpatialNavConfig {
 
         if (NUMBER_KEYS.has(key)) {
             if (typeof value === 'number' && Number.isFinite(value)) {
-                (out as Record<string, unknown>)[key] = value;
+                const range = NUMBER_RANGES[key];
+                (out as Record<string, unknown>)[key] = range
+                    ? Math.min(Math.max(value, range.min), range.max)
+                    : value;
             } else {
                 log.warn(`config.${key}: expected finite number, got ${typeof value} — ignored`);
             }
@@ -502,7 +671,10 @@ export function validateUserConfig(input: unknown): PartialSpatialNavConfig {
 
         if (OBJECT_KEYS.has(key)) {
             if (value && typeof value === 'object' && !Array.isArray(value)) {
-                (out as Record<string, unknown>)[key] = value;
+                const validator = NESTED_VALIDATORS[key];
+                (out as Record<string, unknown>)[key] = validator
+                    ? validator(value as Record<string, unknown>)
+                    : value;
             } else {
                 log.warn(`config.${key}: expected object, got ${typeof value} — ignored`);
             }

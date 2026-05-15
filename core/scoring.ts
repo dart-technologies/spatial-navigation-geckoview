@@ -347,12 +347,27 @@ export function findDirectionalCandidate(
 
     const passes: ScoringOptions[] = [
         // Pass 1: strict — same viewport, strict edges
+        // alignmentWeight bumped from 10 → 200 to prevent the
+        // "horizontal carousel LEFT picks title-below-sibling" bug:
+        // PRIMARY_WEIGHT is 1000 so a single px of primary-axis advantage
+        // adds 1000 to a candidate`s score; with alignmentWeight=10, a
+        // candidate would need 100+ px of off-axis penalty to flip a 1 px
+        // primary win. For a 3-thumbnail carousel where each card`s
+        // title sits ~135 px below the card (`a.summary-thumbnail` row
+        // at Y=2498, `a.summary-title-link` row at Y=2715), the
+        // sibling-thumb on the same row is only 12 px further in the
+        // navigation axis than the off-row title — title was winning
+        // pass-0 scoring (15,681 vs 26,326). Bumping alignmentWeight to
+        // 200 in the strict pass makes the 134 px secondary cost
+        // 26,800 — comfortably more than the 12,000 primary advantage —
+        // so the row-aligned sibling wins. Pass 1/2 stay relaxed so
+        // wrap-row fallback navigation isn`t affected.
         {
             strictEdges: true,
             allowOverlap: false,
             requireViewport: true,
             viewportMargin: 0,
-            alignmentWeight: 10,
+            alignmentWeight: 200,
             distanceWeight: 1,
             preferScrollGroup: true,
         },

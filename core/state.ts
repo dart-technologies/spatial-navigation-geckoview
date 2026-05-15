@@ -137,6 +137,15 @@ export interface SpatialNavState {
     activeResizeObserver: ResizeObserver | null;
     updateTimer: number | null;
     overlaySuppressed: boolean;
+    /**
+     * Pending auto-recover timer set by `suppressOverlay('spatialNavigationExit')`.
+     * Cleared when (a) a new navigation succeeds, (b) the timer fires and
+     * either re-shows or confirms a genuine exit, or (c) a new suppression
+     * call overrides it. Lives on state (not as a module-local) so the
+     * `clearOverlaySuppression(state)` helper can atomically clear flag +
+     * timer from anywhere in the codebase.
+     */
+    suppressRecoveryTimer: ReturnType<typeof setTimeout> | null;
     nextTargets: Record<DirectionName, NavigationCandidate | null>;
     noTargetTimers: Partial<Record<DirectionName, ReturnType<typeof setTimeout> | null>>;
     lastFocusedElement: HTMLElement | null;
@@ -187,6 +196,14 @@ export interface SpatialNavState {
 
     // Handler ID for stale handler detection
     handlerId: number;
+
+    // Last input modality reported to the native host. Touch by default; flips
+    // to hardware-nav when the extension's keydown handler sees a real
+    // directional/activation key, and flips back to touch when the in-page
+    // pointer watcher observes a trusted, non-synthetic `pointerdown` /
+    // `touchstart`. Used to throttle `inputModalityChange` outbound messages
+    // so we only post on actual transitions, not on every pointer event.
+    lastReportedModality: 'touch' | 'hardware-nav';
 }
 
 // Extend Window interface
@@ -220,7 +237,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
 
     // Core navigation state
     state.config = config;
-    state.version = '3.0.1';
+    state.version = '3.1.0';
     state.currentIndex = typeof state.currentIndex === 'number' ? state.currentIndex : -1;
     state.initialized = !!state.initialized;
     state.handlersAttached = !!state.handlersAttached;
@@ -248,6 +265,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
     state.activeResizeObserver = state.activeResizeObserver || null;
     state.updateTimer = state.updateTimer || null;
     state.overlaySuppressed = state.overlaySuppressed ?? false;
+    state.suppressRecoveryTimer = state.suppressRecoveryTimer ?? null;
     state.nextTargets = state.nextTargets || { up: null, down: null, left: null, right: null };
     state.noTargetTimers = state.noTargetTimers || { up: null, down: null, left: null, right: null };
     state.lastFocusedElement = state.lastFocusedElement || null;
@@ -308,6 +326,10 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
     // Handler ID for stale handler detection (0 means not yet assigned)
     state.handlerId = state.handlerId || 0;
 
+    // Default modality at boot: touch. The pointer watcher in `main.ts` and
+    // the keydown handler in `handlers.ts` flip this on real input.
+    state.lastReportedModality = state.lastReportedModality || 'touch';
+
     return state;
 }
 
@@ -337,6 +359,6 @@ export function getInstrumentation():
         ...state.instrumentation,
         focusablesCount: state.focusables.length,
         currentIndex: state.currentIndex,
-        version: state.version || '3.0.1',
+        version: state.version || '3.1.0',
     };
 }

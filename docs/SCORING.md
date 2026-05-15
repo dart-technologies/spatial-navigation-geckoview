@@ -14,9 +14,17 @@ progressively relaxed constraints:
 
 | Pass | strictEdges | allowOverlap | requireViewport | viewportMargin | alignmentWeight | distanceWeight | preferScrollGroup |
 | ---- | ----------- | ------------ | --------------- | -------------- | --------------- | -------------- | ----------------- |
-| 1    | true        | false        | true            | 0              | 10              | 1              | true              |
+| 1    | true        | false        | true            | 0              | **200**         | 1              | true              |
 | 2    | false       | true         | true            | 160            | 8               | 0.9            | true              |
 | 3    | false       | true         | false           | 0              | 6               | 0.7            | false             |
+
+> **3.1.0 change**: Pass-1 `alignmentWeight` was raised from 10 → 200. This
+> fixes the horizontal-carousel "title-below-sibling" bug: a candidate
+> aligned on the navigation axis (e.g., the next card in the same row) now
+> beats a misaligned one (e.g., the card's caption directly below the
+> current item) by a wide enough margin that the `SAME_SCROLL_BONUS` (150)
+> can't overpower it. Passes 2 and 3 stay relaxed (8 and 6) so they still
+> reach off-axis candidates when pass 1 returns nothing.
 
 The first pass that returns a candidate wins. If all three return null and
 `wrapNavigation` is on, [`findWrapCandidate()`](../core/scoring.ts) picks the

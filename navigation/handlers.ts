@@ -55,7 +55,7 @@ const REFRESH_THROTTLE_MS = 150;
 const CLICK_ANIMATION_MS = 150;
 
 /** DOM attributes used for cross-world coordination. */
-const HANDLER_ID_ATTR = 'data-spatnav-handler-id';
+export const HANDLER_ID_ATTR = 'data-spatnav-handler-id';
 const HANDLER_COUNTER_ATTR = 'data-spatnav-handler-counter';
 const EVENT_LOCK_ATTR = 'data-spatnav-event-lock';
 
@@ -141,6 +141,9 @@ export function handleKeyDown(event: KeyboardEvent, state: SpatialNavState): voi
 
     // 6. ENTER and SPACE — activate the focused element.
     if (event.key === 'Enter' || event.key === ' ') {
+        // Mark hardware-nav so the next real pointer event flips us back to
+        // touch (the modality watcher in `main.ts` reads this).
+        state.lastReportedModality = 'hardware-nav';
         handleActivationKey(event, state, myHandlerId);
         return;
     }
@@ -148,6 +151,10 @@ export function handleKeyDown(event: KeyboardEvent, state: SpatialNavState): voi
     // 7. Arrow keys — directional navigation.
     const keyMap = directionByKey as Record<string, Direction>;
     if (!keyMap[event.key]) return;
+
+    // We're committed to handling a directional key; mark hardware-nav so the
+    // pointer watcher resumes transition reporting.
+    state.lastReportedModality = 'hardware-nav';
 
     log.debug(`directional key: ${event.key}`);
 
@@ -201,7 +208,12 @@ export function handleKeyDown(event: KeyboardEvent, state: SpatialNavState): voi
     const direction = keyMap[event.key];
     log.debug(`moving direction: ${direction.name}`);
 
-    const moved = moveInDirection(direction, event, state);
+    // First attempt — silent on boundary so we don't fire focusExit
+    // twice per user keypress. The retry below carries the boundary
+    // notification (sendFocusExit + spatialNavigationExit dispatch +
+    // overlay suppression) — see `MoveInDirectionOptions.notifyOnBoundary`
+    // for the analytics-cluster motivation.
+    const moved = moveInDirection(direction, event, state, { notifyOnBoundary: false });
     const afterActive = getActiveElement();
 
     if (!moved) {
@@ -209,7 +221,9 @@ export function handleKeyDown(event: KeyboardEvent, state: SpatialNavState): voi
         refreshFocusables(state);
         state.lastRefreshTime = Date.now();
 
-        const retryMoved = moveInDirection(direction, event, state);
+        // Retry attempt — this one DOES notify on boundary, so the
+        // single user keypress produces at most one focusExit.
+        const retryMoved = moveInDirection(direction, event, state, { notifyOnBoundary: true });
         if (!retryMoved) {
             log.debug(`boundary reached: ${direction.name}`);
             state.lastBoundary = direction.name;
@@ -518,10 +532,14 @@ function applyClickFeedback(state: SpatialNavState, activeElement: HTMLElement):
 
 /**
  * Attach a scroll listener (capture phase) that updates the overlay when the
- * focused element's viewport position changes. Uses rAF + per-element scroll
- * cache to coalesce updates and skip jitter from smooth-scrolling.
+ * focused element's viewport position changes. Uses rAF debouncing to
+ * coalesce multiple scroll events into one position update per frame.
+ *
+ * Exported for testing — pin the per-rAF-tick update contract so a
+ * future refactor can't reintroduce the "scrollThreshold filter
+ * blocks smooth-scroll tracking" regression.
  */
-function attachScrollListener(state: SpatialNavState): void {
+export function attachScrollListener(state: SpatialNavState): void {
     const config = state.config;
 
     if (config.observeScroll === false) {
@@ -544,7 +562,14 @@ function attachScrollListener(state: SpatialNavState): void {
                     return;
                 }
                 const target = rawTarget === document ? window : rawTarget;
-                const threshold = config.scrollThreshold || 8;
+                // `config.scrollThreshold` is retained for back-compat
+                // with consumers that set it, but the post-rAF
+                // listener architecture no longer needs a px filter —
+                // the rAF debounce above already caps the update rate
+                // at one per frame, and gating per-frame deltas (which
+                // for smooth-scroll are ~1–15 px) caused the
+                // "ring stuck while page scrolls" artifact (see fire
+                // logic below). The knob is effectively a no-op now.
 
                 let currentScrollY: number;
                 let currentScrollX: number;
@@ -565,9 +590,33 @@ function attachScrollListener(state: SpatialNavState): void {
                 };
                 const deltaY = Math.abs(currentScrollY - cached.scrollY);
                 const deltaX = Math.abs(currentScrollX - cached.scrollX);
+                scrollPositions.set(target as Window | Element, {
+                    scrollY: currentScrollY,
+                    scrollX: currentScrollX,
+                });
 
-                // Only update if scroll moved past threshold (prevents smooth-scroll jitter).
-                if (deltaY > threshold || deltaX > threshold) {
+                // Fire on ANY frame-over-frame scroll movement (>= 1 px).
+                //
+                // The earlier `config.scrollThreshold || 8` filter was
+                // intended to avoid micro-jitter, but in practice it
+                // filtered out the meaningful per-tick deltas of a
+                // `behavior:'smooth'` scrollBy — those typically move
+                // 4–15 px per frame over ~300 ms. The listener fired
+                // exactly once (at the boundary itself) and the focus
+                // ring sat at its pre-scroll viewport coords until the
+                // smooth scroll finished, producing the user-reported
+                // "ring slides off and returns to settle" artifact. The
+                // rAF debounce above already caps the update rate at
+                // one per frame, so removing the px filter doesn't
+                // increase the worst-case overhead — it just keeps the
+                // ring honest during smooth-scroll animations.
+                //
+                // Kept the `cached`/`deltaY`/`deltaX` plumbing because
+                // a 0-px scroll event means nothing meaningful changed
+                // (e.g., the page emits a stub scroll event right after
+                // an instant scrollIntoView that already landed); skip
+                // those.
+                if (deltaY > 0 || deltaX > 0) {
                     const active = getActiveElement() as HTMLElement | null;
                     if (active && state.currentIndex !== -1) {
                         const currentEntry = state.focusables[state.currentIndex];
@@ -581,14 +630,21 @@ function attachScrollListener(state: SpatialNavState): void {
                             currentEntry.centerY = rect.top + rect.height / 2;
                             currentEntry.rect = rect;
 
+                            // [diag] Scroll tick → overlay update path.
+                            // log.debug: fires on every requestAnimationFrame
+                            // scroll batch, so log.info would flood debug
+                            // bundles. Production strips this entirely.
+                            log.debug(
+                                `scroll listener: update dY=${deltaY} dX=${deltaX} rectT=${rect.top.toFixed(1)} VPh=${window.innerHeight} suppressed=${state.overlaySuppressed} active=${active.tagName.toLowerCase()}${active.id ? '#' + active.id : ''}`
+                            );
+
                             scheduleOverlayUpdate(active, state);
                         }
+                    } else {
+                        log.debug(
+                            `scroll listener: NO active focusable hasActive=${!!active} currentIndex=${state.currentIndex}`
+                        );
                     }
-
-                    scrollPositions.set(target as Window | Element, {
-                        scrollY: currentScrollY,
-                        scrollX: currentScrollX,
-                    });
                 }
 
                 scrollTimer = null;

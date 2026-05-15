@@ -23,36 +23,20 @@
      */
     /**
      * Build-time debug flag.
-     * Replaced by Rollup's @rollup/plugin-replace at build time.
-     * In production builds this is `false`, allowing Terser to eliminate debug-only code.
-     */
-    const DEBUG = /* @__PURE__ */ (() => {
-        if (typeof process !== 'undefined') {
-            const env = process.env;
-            if (env?.NODE_ENV === 'production')
-                return false;
-        }
-        return true;
-    })();
-    /**
-     * Runtime debug flag — checked on every log call, but ONLY in debug builds.
      *
-     * In debug bundles (`DEBUG === true`) a developer can set
-     * `window.SPATIAL_NAV_DEBUG = true` (or the legacy `flutterSpatialNavDebug`)
-     * to turn on verbose logging. In production bundles the build-time
-     * `DEBUG` constant is `false`, so this function unconditionally returns
-     * false and the call is dead-code-eliminated by Terser along with the
-     * surrounding `console.log` — pages cannot re-enable verbose logging by
-     * poking a page-visible global.
+     * Replaced by Rollup's @rollup/plugin-replace at build time. The substitution
+     * targets the LITERAL `"development"` token; aliasing the access (e.g.
+     * `const env = process.env; env?.NODE_ENV`) defeats the replacement and lets
+     * the IIFE run unchanged in browsers — where `typeof process === 'undefined'`
+     * is **false** under Webpack-style globals but **true** under content-script
+     * isolation, so the original aliased form unintentionally returned `true`
+     * (debug enabled) in production extension bundles. The direct comparison
+     * below is folded to a literal `false` by Terser in production builds and to
+     * `true` in development builds.
+     *
+     * In production builds this is `false`, allowing Terser to eliminate
+     * debug-only code via dead-code elimination.
      */
-    function isRuntimeDebugEnabled() {
-        if (!DEBUG)
-            return false;
-        if (typeof window === 'undefined')
-            return false;
-        const w = window;
-        return w.SPATIAL_NAV_DEBUG === true || w.flutterSpatialNavDebug === true;
-    }
     const LOG_LEVEL_ORDER = {
         debug: 0,
         info: 1,
@@ -60,7 +44,7 @@
         error: 3,
         silent: 4,
     };
-    let currentLevel = DEBUG ? 'debug' : 'warn';
+    let currentLevel = 'debug' ;
     function shouldLog(level) {
         return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[currentLevel];
     }
@@ -76,10 +60,6 @@
         const timers = new Map();
         return {
             debug(message, data) {
-                // Tree-shakeable in production: when DEBUG is false at build time,
-                // this whole branch can be removed by Terser unless runtime opt-in fires.
-                if (!DEBUG && !isRuntimeDebugEnabled())
-                    return;
                 if (!shouldLog('debug'))
                     return;
                 if (data !== undefined) {
@@ -120,13 +100,9 @@
                 }
             },
             time(label) {
-                if (!DEBUG && !isRuntimeDebugEnabled())
-                    return;
                 timers.set(label, performance.now());
             },
             timeEnd(label) {
-                if (!DEBUG && !isRuntimeDebugEnabled())
-                    return;
                 const start = timers.get(label);
                 if (start !== undefined) {
                     const duration = performance.now() - start;
@@ -135,15 +111,11 @@
                 }
             },
             group(label) {
-                if (!DEBUG && !isRuntimeDebugEnabled())
-                    return;
                 if (!shouldLog('debug'))
                     return;
                 console.group(formatMessage(namespace, label));
             },
             groupEnd() {
-                if (!DEBUG && !isRuntimeDebugEnabled())
-                    return;
                 if (!shouldLog('debug'))
                     return;
                 console.groupEnd();
@@ -164,7 +136,7 @@
      *   - {@link CONFIG_PRESETS} / {@link applyPreset} — TV / phone / tablet / kiosk profiles
      *   - {@link SCORING_CONSTANTS} — score weights used by the scoring algorithm
      */
-    const log$f = createLogger('Config');
+    const log$g = createLogger('Config');
     // =============================================================================
     // Scoring constants
     // =============================================================================
@@ -269,6 +241,18 @@
             overlayScrimOpacity: clampNumber(userConfig.overlayScrimOpacity, 0, 1, 0.06),
             overlayGlowOpacity: clampNumber(userConfig.overlayGlowOpacity, 0, 1, 0.35),
             overlayGlowBlur: clampNumber(userConfig.overlayGlowBlur, 0, 64, 14),
+            overlayInnerGlowOpacity: clampNumber(userConfig.overlayInnerGlowOpacity, 0, 1, 0.16),
+            visibilityMode: userConfig.visibilityMode === 'hardware-nav-only' ? 'hardware-nav-only' : 'always',
+            enableFocusPulse: userConfig.enableFocusPulse === true,
+            // Default to `'scroll'` so a directional press at a viewport
+            // boundary on a long page scrolls into view instead of silently
+            // dropping the keystroke. Hosts that want the legacy
+            // exit-to-native behaviour can set `'exit'`.
+            boundaryScrollBehavior: userConfig.boundaryScrollBehavior === 'exit'
+                ? 'exit'
+                : userConfig.boundaryScrollBehavior === 'none'
+                    ? 'none'
+                    : 'scroll',
             // Dynamic content observation
             observeMutations: userConfig.observeMutations !== false,
             observeScroll: userConfig.observeScroll !== false,
@@ -349,6 +333,7 @@
         'overlayScrimOpacity',
         'overlayGlowOpacity',
         'overlayGlowBlur',
+        'overlayInnerGlowOpacity',
         'mutationDebounce',
         'scrollThreshold',
         'intersectionThreshold',
@@ -374,13 +359,20 @@
         'precomputeCandidates',
         'wrapNavigation',
         'useCSSProperties',
+        'enableFocusPulse',
     ]);
-    const ENUM_KEYS = {
+    // Null-prototype lookup so attacker keys like `toString` / `hasOwnProperty`
+    // don't resolve to Object.prototype methods via the prototype chain — that
+    // would make `ENUM_KEYS[key].has(value)` throw TypeError, propagate uncaught
+    // out of getConfig(), and abort initSpatialNavigation entirely.
+    const ENUM_KEYS = Object.assign(Object.create(null), {
         overlayTheme: new Set(['default', 'high-contrast']),
         refocusStrategy: new Set(['closest', 'first']),
         scoringMode: new Set(['geometric', 'grid']),
         distanceFunction: new Set(['euclidean', 'manhattan', 'projected']),
-    };
+        visibilityMode: new Set(['always', 'hardware-nav-only']),
+        boundaryScrollBehavior: new Set(['exit', 'scroll', 'none']),
+    });
     const ARRAY_KEYS = new Set(['virtualContainerSelectors']);
     const OBJECT_KEYS = new Set(['iframeSupport', 'focusGroups']);
     /**
@@ -393,6 +385,79 @@
      */
     const ARRAY_MAX_ITEMS = 32;
     const ARRAY_ITEM_MAX_LENGTH = 256;
+    /**
+     * Per-key numeric ranges enforced at validation time.
+     *
+     * The clamps live here (not just in getConfig) so every entry point —
+     * getConfig(), updateConfig(), and the native `configUpdate` handler —
+     * gets uniform schema enforcement. Otherwise a native push of e.g.
+     * `{ safeAreaMargin: 99999 }` would slip through `validateUserConfig`'s
+     * type-only check and land in `state.config` unclamped.
+     */
+    const NUMBER_RANGES = Object.assign(Object.create(null), {
+        // Visual styling
+        outlineWidth: { min: 1, max: 20 },
+        outlineOffset: { min: 0, max: 50 },
+        overlayZIndex: { min: 1, max: 2147483646 },
+        arrowScale: { min: 0.1, max: 4 },
+        safeAreaMargin: { min: 0, max: 200 },
+        overlayScrimOpacity: { min: 0, max: 1 },
+        overlayGlowOpacity: { min: 0, max: 1 },
+        overlayGlowBlur: { min: 0, max: 64 },
+        overlayInnerGlowOpacity: { min: 0, max: 1 },
+        // Observers and timers (DoS guard — caps at 5s except cache timeout at 1min)
+        mutationDebounce: { min: 0, max: 5000 },
+        scrollThreshold: { min: 0, max: 1000 },
+        virtualScrollDebounce: { min: 0, max: 5000 },
+        precomputeCacheTimeout: { min: 0, max: 60000 },
+        intersectionThreshold: { min: 0, max: 1 },
+        // Scoring thresholds (geometric — capped at 4096px which is well above
+        // any plausible viewport edge)
+        overlapThreshold: { min: 0, max: 4096 },
+        gridAlignmentTolerance: { min: 0, max: 4096 },
+        minElementSize: { min: 0, max: 4096 },
+    });
+    /**
+     * Per-key schemas for nested-object config values. Each validator strips
+     * unknown fields and clamps each known field to its declared type/enum.
+     *
+     * Without this, a page could ship e.g.
+     * `{ iframeSupport: { __proto__: { polluted: true } } }` and the un-checked
+     * object would land verbatim in `state.config`. The shallow object-shape
+     * check in OBJECT_KEYS handling is not enough.
+     */
+    const NESTED_VALIDATORS = Object.assign(Object.create(null), {
+        iframeSupport: (raw) => {
+            const allowedFocusMethods = new Set(['element', 'contentWindow']);
+            const cleaned = {};
+            if (typeof raw.enabled === 'boolean')
+                cleaned.enabled = raw.enabled;
+            if (typeof raw.selector === 'string' && raw.selector.length <= ARRAY_ITEM_MAX_LENGTH) {
+                cleaned.selector = raw.selector;
+            }
+            if (typeof raw.focusMethod === 'string' && allowedFocusMethods.has(raw.focusMethod)) {
+                cleaned.focusMethod = raw.focusMethod;
+            }
+            return cleaned;
+        },
+        focusGroups: (raw) => {
+            const allowedBoundary = new Set(['wrap', 'stop', 'exit']);
+            const cleaned = {};
+            if (typeof raw.enabled === 'boolean')
+                cleaned.enabled = raw.enabled;
+            if (typeof raw.boundaryBehavior === 'string' && allowedBoundary.has(raw.boundaryBehavior)) {
+                cleaned.boundaryBehavior = raw.boundaryBehavior;
+            }
+            // defaultRules is a freeform map; pass through only if it's a
+            // plain object (no Array, no null), without touching keys.
+            if (raw.defaultRules &&
+                typeof raw.defaultRules === 'object' &&
+                !Array.isArray(raw.defaultRules)) {
+                cleaned.defaultRules = raw.defaultRules;
+            }
+            return cleaned;
+        },
+    });
     /**
      * Sanitize an arbitrary user-provided config object.
      *
@@ -414,16 +479,19 @@
                     out[key] = value;
                 }
                 else {
-                    log$f.warn(`config.${key}: expected string, got ${typeof value} — ignored`);
+                    log$g.warn(`config.${key}: expected string, got ${typeof value} — ignored`);
                 }
                 continue;
             }
             if (NUMBER_KEYS.has(key)) {
                 if (typeof value === 'number' && Number.isFinite(value)) {
-                    out[key] = value;
+                    const range = NUMBER_RANGES[key];
+                    out[key] = range
+                        ? Math.min(Math.max(value, range.min), range.max)
+                        : value;
                 }
                 else {
-                    log$f.warn(`config.${key}: expected finite number, got ${typeof value} — ignored`);
+                    log$g.warn(`config.${key}: expected finite number, got ${typeof value} — ignored`);
                 }
                 continue;
             }
@@ -432,7 +500,7 @@
                     out[key] = value;
                 }
                 else {
-                    log$f.warn(`config.${key}: expected boolean, got ${typeof value} — ignored`);
+                    log$g.warn(`config.${key}: expected boolean, got ${typeof value} — ignored`);
                 }
                 continue;
             }
@@ -442,7 +510,7 @@
                 }
                 else {
                     const allowed = Array.from(ENUM_KEYS[key]).join(', ');
-                    log$f.warn(`config.${key}: must be one of [${allowed}] — got ${JSON.stringify(value)}, ignored`);
+                    log$g.warn(`config.${key}: must be one of [${allowed}] — got ${JSON.stringify(value)}, ignored`);
                 }
                 continue;
             }
@@ -456,25 +524,28 @@
                         .slice(0, ARRAY_MAX_ITEMS)
                         .filter((s) => s.length <= ARRAY_ITEM_MAX_LENGTH);
                     if (capped.length !== value.length) {
-                        log$f.warn(`config.${key}: truncated from ${value.length} to ${capped.length} items (caps: ${ARRAY_MAX_ITEMS} items, ${ARRAY_ITEM_MAX_LENGTH} chars each)`);
+                        log$g.warn(`config.${key}: truncated from ${value.length} to ${capped.length} items (caps: ${ARRAY_MAX_ITEMS} items, ${ARRAY_ITEM_MAX_LENGTH} chars each)`);
                     }
                     out[key] = capped;
                 }
                 else {
-                    log$f.warn(`config.${key}: expected string[], got ${typeof value} — ignored`);
+                    log$g.warn(`config.${key}: expected string[], got ${typeof value} — ignored`);
                 }
                 continue;
             }
             if (OBJECT_KEYS.has(key)) {
                 if (value && typeof value === 'object' && !Array.isArray(value)) {
-                    out[key] = value;
+                    const validator = NESTED_VALIDATORS[key];
+                    out[key] = validator
+                        ? validator(value)
+                        : value;
                 }
                 else {
-                    log$f.warn(`config.${key}: expected object, got ${typeof value} — ignored`);
+                    log$g.warn(`config.${key}: expected object, got ${typeof value} — ignored`);
                 }
                 continue;
             }
-            log$f.warn(`config.${key}: unknown key — ignored`);
+            log$g.warn(`config.${key}: unknown key — ignored`);
         }
         return out;
     }
@@ -530,7 +601,7 @@
         window.flutterFocusState = state;
         // Core navigation state
         state.config = config;
-        state.version = '3.0.1';
+        state.version = '3.1.0';
         state.currentIndex = typeof state.currentIndex === 'number' ? state.currentIndex : -1;
         state.initialized = !!state.initialized;
         state.handlersAttached = !!state.handlersAttached;
@@ -556,6 +627,7 @@
         state.activeResizeObserver = state.activeResizeObserver || null;
         state.updateTimer = state.updateTimer || null;
         state.overlaySuppressed = state.overlaySuppressed ?? false;
+        state.suppressRecoveryTimer = state.suppressRecoveryTimer ?? null;
         state.nextTargets = state.nextTargets || { up: null, down: null, left: null, right: null };
         state.noTargetTimers = state.noTargetTimers || { up: null, down: null, left: null, right: null };
         state.lastFocusedElement = state.lastFocusedElement || null;
@@ -605,6 +677,9 @@
         state.detectedFramework = state.detectedFramework || null;
         // Handler ID for stale handler detection (0 means not yet assigned)
         state.handlerId = state.handlerId || 0;
+        // Default modality at boot: touch. The pointer watcher in `main.ts` and
+        // the keydown handler in `handlers.ts` flip this on real input.
+        state.lastReportedModality = state.lastReportedModality || 'touch';
         return state;
     }
 
@@ -677,23 +752,253 @@
         return 'body';
     }
     /**
-     * Calculate the visual bounding rect for an element, potentially expanding
-     * it to encompass a larger visual child (logo, image, etc).
+     * Calculate the visual bounding rect for an element, balancing two
+     * heuristics:
+     *
+     *  1. **Shrink-to-fit** — when the focused element is a link/card whose
+     *     dominant visible content is a single media child (img / picture /
+     *     svg / video / canvas), use the child's rect. Outlines what the
+     *     user perceives as "the focused thing" instead of the larger
+     *     wrapper card. The "single media child" + "no significant text
+     *     siblings" gates prevent shrinking icon-plus-label links to their
+     *     icon.
+     *
+     *  2. **Expand-to-fit** — when the focused element has an image-like
+     *     child that overflows the hit area (logos, image-buttons), use
+     *     the larger child rect so the visual outline matches the visual
+     *     asset, not the smaller tap target.
+     *
+     * Shrink is tried first; if no qualifying single visible media child
+     * exists, the expand path falls through. Both paths preserve the
+     * original behaviour for elements whose own rect already matches their
+     * visible content (the common case — buttons, inputs, plain links).
      */
     function calculateVisualRect(element) {
-        let rect = safeGetBoundingClientRect(element);
-        // For elements like logos/image-buttons whose hit area is smaller than the
-        // visual asset, expand the rect to cover the larger child. This makes the
-        // focus indicator highlight what the user *sees*, not the tap target.
-        const visualChild = element.querySelector('img, svg, video, picture, canvas');
+        const rect = safeGetBoundingClientRect(element);
+        // Helper: clip the visual rect to any clipping container between
+        // the media child and the focused element (inclusive at both
+        // ends). Squarespace`s `a.summary-thumbnail-container` pattern
+        // wraps an over-tall `<img>` in an `<div.img-wrapper>` with
+        // `overflow: hidden`, all inside the `<a>` (which itself has
+        // `overflow: visible`). The visible image is the intersection of
+        // the img rect and the img-wrapper rect — NOT the full img rect.
+        // Without this clamp the focus ring extends into empty space
+        // above/below the visible thumbnail.
+        //
+        // `mediaChild` is optional: when called from the shrink-to-fit
+        // path we already know which child the ring will track; from
+        // expand-to-fit we re-discover it. Walking from the child up to
+        // (and including) the focused element catches the canonical
+        // pattern (inner clipping wrapper) AND the simpler "wrapper itself
+        // has overflow: hidden" case in one path.
+        const view = element.ownerDocument?.defaultView ?? window;
+        const isClipped = (cs) => {
+            const isClip = (v) => !!v && v !== 'visible';
+            // Happy-dom (test env) doesn`t reliably resolve shorthand
+            // `overflow` → longhand `overflow-x` / `overflow-y`. Production
+            // browsers populate the longhands so we check both for stable
+            // behaviour across environments.
+            return isClip(cs.overflowX) || isClip(cs.overflowY) || isClip(cs.overflow);
+        };
+        const clipToVisibleArea = (visual, mediaChild) => {
+            // Walk from the media child up to the focused element (inclusive),
+            // intersecting with every element that clips its overflow.
+            let left = visual.left;
+            let top = visual.top;
+            let right = visual.right;
+            let bottom = visual.bottom;
+            let cursor = mediaChild ?? element;
+            let safety = 0;
+            while (cursor && safety < 16) {
+                try {
+                    const cs = view.getComputedStyle(cursor);
+                    if (isClipped(cs)) {
+                        const cursorRect = safeGetBoundingClientRect(cursor);
+                        left = Math.max(left, cursorRect.left);
+                        top = Math.max(top, cursorRect.top);
+                        right = Math.min(right, cursorRect.right);
+                        bottom = Math.min(bottom, cursorRect.bottom);
+                    }
+                }
+                catch {
+                    // No window / non-browser env — stop walking.
+                    break;
+                }
+                if (cursor === element)
+                    break;
+                cursor = cursor.parentElement;
+                safety++;
+            }
+            const width = Math.max(0, right - left);
+            const height = Math.max(0, bottom - top);
+            if (width <= 0 || height <= 0)
+                return rect;
+            // If no clip changed anything, return the original rect (no
+            // floating-point drift from constructing a new DOMRect).
+            if (left === visual.left &&
+                top === visual.top &&
+                right === visual.right &&
+                bottom === visual.bottom) {
+                return visual;
+            }
+            return new DOMRect(left, top, width, height);
+        };
+        // 1) Button-parent expand (runs BEFORE shrink-to-fit). When the
+        //    immediate parent is a visually-distinct round/pill container
+        //    (non-trivial border-radius + non-transparent background or
+        //    visible border) that extends beyond the focused element, treat
+        //    the parent as the "visible button" and expand the ring to its
+        //    bounds. Pages sometimes wrap a small focusable in a larger
+        //    styled container — Squarespace`s "back-to-top" button is the
+        //    canonical case: a `<div.back-to-top-link>` styled as a 50×50
+        //    white circle (`border-radius: 50%`) with an `<a>` inside
+        //    whose box is 50×36 (just the text bounds).
+        //
+        //    Runs first because if it fires, the visible button bound is
+        //    authoritative — shrink-to-fit would otherwise shrink to an
+        //    icon inside the button and miss the visible chrome.
+        try {
+            const parent = element.parentElement;
+            if (parent && parent !== element.ownerDocument?.body) {
+                const parentRect = safeGetBoundingClientRect(parent);
+                const epsExtend = 2;
+                const parentExtends = parentRect.left < rect.left - epsExtend ||
+                    parentRect.top < rect.top - epsExtend ||
+                    parentRect.right > rect.right + epsExtend ||
+                    parentRect.bottom > rect.bottom + epsExtend;
+                if (parentExtends) {
+                    const pcs = view.getComputedStyle(parent);
+                    const smallerDim = Math.min(parentRect.width, parentRect.height);
+                    const radiusStr = pcs.borderRadius || '0';
+                    let isRound = false;
+                    if (radiusStr.includes('%')) {
+                        isRound = !/^0(\.0+)?%/.test(radiusStr);
+                    }
+                    else {
+                        const radiusPx = parseFloat(radiusStr);
+                        if (!Number.isNaN(radiusPx) && smallerDim > 0) {
+                            isRound = radiusPx >= smallerDim * 0.25;
+                        }
+                    }
+                    const bg = pcs.backgroundColor || '';
+                    const hasOpaqueBg = bg.length > 0 &&
+                        bg !== 'transparent' &&
+                        !/rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*0(\.0+)?\s*\)/.test(bg);
+                    const borderWidthPx = parseFloat(pcs.borderTopWidth || '0');
+                    const hasVisibleBorder = borderWidthPx > 0;
+                    const reasonablyButtonSized = parentRect.width <= 320 && parentRect.height <= 320;
+                    if (isRound && (hasOpaqueBg || hasVisibleBorder) && reasonablyButtonSized) {
+                        return clipToVisibleArea(parentRect, parent);
+                    }
+                }
+            }
+        }
+        catch {
+            // No window / non-browser env — fall through to next strategy.
+        }
+        // 2) Shrink-to-fit when the focused element is a link/card wrapping
+        //    a single media element. Restrict to descendants (not strict
+        //    children) because pages routinely wrap `<img>` in an extra
+        //    `<span>` or `<picture>` inside the link.
+        const mediaSelector = 'img, picture, svg, video, canvas';
+        const mediaCandidates = element.querySelectorAll(mediaSelector);
+        if (mediaCandidates.length > 0) {
+            const visibleMedia = [];
+            for (let i = 0; i < mediaCandidates.length; i++) {
+                const child = mediaCandidates[i];
+                // Skip explicitly-hidden children.
+                if (child.getAttribute('aria-hidden') === 'true')
+                    continue;
+                const childRect = safeGetBoundingClientRect(child);
+                if (childRect.width <= 0 || childRect.height <= 0)
+                    continue;
+                // Skip children whose computed display/visibility hides them.
+                // (Robolectric/jsdom test envs always return 'block', so this
+                // is a no-op there but matters in production.)
+                try {
+                    const cs = (element.ownerDocument?.defaultView ?? window).getComputedStyle(child);
+                    if (cs.display === 'none' || cs.visibility === 'hidden')
+                        continue;
+                }
+                catch {
+                    // No window / non-browser env — accept the child.
+                }
+                visibleMedia.push(child);
+            }
+            if (visibleMedia.length === 1) {
+                const childRect = safeGetBoundingClientRect(visibleMedia[0]);
+                const wrapperArea = Math.max(1, rect.width * rect.height);
+                const childArea = childRect.width * childRect.height;
+                // Only shrink when the media child dominates the wrapper
+                // (≥50% of its area). Keeps icon-plus-label links from
+                // shrinking to the icon.
+                const dominates = childArea / wrapperArea >= 0.5;
+                // Don't shrink if there's significant non-media visible text
+                // alongside the image (caption-under-photo cards, etc.).
+                const text = element.textContent?.trim() ?? '';
+                const hasSignificantText = text.length > 0;
+                if (dominates && !hasSignificantText) {
+                    return clipToVisibleArea(childRect, visibleMedia[0]);
+                }
+            }
+        }
+        // 2) Expand-to-fit: for elements like logos / image-buttons whose
+        //    hit area is smaller than the visual asset, expand outward.
+        //    Preserves the original v3.0.1 behaviour for `overflow: visible`
+        //    wrappers. When the wrapper clips its overflow (Squarespace
+        //    cards etc.), `clipToWrapperIfNeeded` intersects the expanded
+        //    rect with the wrapper`s box so the ring doesn`t extend into
+        //    empty space outside the visible thumbnail.
+        const visualChild = element.querySelector(mediaSelector);
         if (visualChild) {
             const childRect = safeGetBoundingClientRect(visualChild);
             if (childRect.width > rect.width ||
                 childRect.height > rect.height ||
                 childRect.left < rect.left ||
                 childRect.top < rect.top) {
-                rect = childRect;
+                return clipToVisibleArea(childRect, visualChild);
             }
+        }
+        // 4) Scroll-overflow expand: when the element`s rendered content
+        //    is taller / wider than its box AND the element renders that
+        //    overflow (`overflow: visible`), grow the ring to cover the
+        //    overflowing pixels. Squarespace`s "TOP" button is the
+        //    canonical case (`<a>` with `display: block`, `line-height:
+        //    12px` + `padding-top: 4px` for a 12 px font — the descender
+        //    of "P" pushes 2 px past the box).
+        //
+        //    Skipped for inline (and inline-table/contents) elements:
+        //    `scrollWidth`/`scrollHeight` are not well-defined on inline
+        //    boxes and tend to report the nearest block ancestor`s
+        //    scrollable area, which is unrelated to the element`s own
+        //    visible bounds. Without this gate, the ring on an inline
+        //    `<a>` like Squarespace footer`s "Privacy" link expands to
+        //    ~2× width × 2× height because the parent `<p>` reports
+        //    scrollWidth/Height inherited from the block context.
+        try {
+            const cs = view.getComputedStyle(element);
+            const display = cs.display || '';
+            const overflowMakesSense = display !== 'inline' && display !== 'inline-table' && display !== 'contents';
+            const overflowsBox = overflowMakesSense &&
+                ((element.scrollWidth > 0 && element.scrollWidth > element.clientWidth) ||
+                    (element.scrollHeight > 0 && element.scrollHeight > element.clientHeight));
+            // Only meaningful when the element actually renders its overflow.
+            // (`scrollHeight > clientHeight` on `overflow: hidden` means the
+            // overflow is clipped and not visible — leave the ring at the box.)
+            const showsOverflow = !isClipped(cs);
+            if (overflowsBox && showsOverflow) {
+                // Build an expanded rect that absorbs the overflow. Overflow
+                // direction is determined by writing mode — but for the LTR
+                // top-to-bottom case (the only one we`ve seen in the wild),
+                // overflow grows down and right from the box`s top-left.
+                const dx = Math.max(0, element.scrollWidth - element.clientWidth);
+                const dy = Math.max(0, element.scrollHeight - element.clientHeight);
+                const expanded = new DOMRect(rect.left, rect.top, rect.width + dx, rect.height + dy);
+                return clipToVisibleArea(expanded, element);
+            }
+        }
+        catch {
+            // No window / non-browser env — fall back to plain box rect.
         }
         return rect;
     }
@@ -780,7 +1085,7 @@
      * Creates and manages Shadow DOM overlay for visual focus indicators.
      * Includes main focus overlay and directional preview elements.
      */
-    const log$e = createLogger('Overlay');
+    const log$f = createLogger('Overlay');
     /**
      * Returns true when build-time DEBUG is on or runtime opt-in is set.
      *
@@ -792,9 +1097,7 @@
      * overlay state regardless.
      */
     function isDebugActive() {
-        if (DEBUG)
-            return true;
-        return false;
+        return true;
     }
     // Constants
     const styleId = 'spatnav-focus-styles';
@@ -918,7 +1221,7 @@ body *:focus, body *:focus-visible {
             updateDebugHud(state);
         }
         else {
-            log$e.error('failed to get overlay reference from shadow DOM');
+            log$f.error('failed to get overlay reference from shadow DOM');
         }
         if (host.shadowRoot) {
             const previewRef = host.shadowRoot.getElementById('focus-preview-layer');
@@ -1145,7 +1448,7 @@ body *:focus, body *:focus-visible {
             `  --sn-scrim-alpha: ${config.overlayScrimOpacity};`,
             `  --sn-glow-alpha: ${config.overlayGlowOpacity};`,
             `  --sn-glow-blur: ${config.overlayGlowBlur}px;`,
-            '  --sn-inner-glow-alpha: 0.16;',
+            `  --sn-inner-glow-alpha: ${config.overlayInnerGlowOpacity};`,
             '  --sn-label-bg: rgba(0, 0, 0, 0.62);',
             '  --sn-label-fg: rgba(255, 255, 255, 0.92);',
             '  --sn-label-muted: rgba(255, 255, 255, 0.72);',
@@ -1162,7 +1465,17 @@ body *:focus, body *:focus-visible {
             '  pointer-events: none;',
             '  overflow: visible;',
             '  will-change: left, top, width, height, border-radius, opacity, transform;',
-            '  transition: left 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), top 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), width 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), height 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), border-radius 0.14s cubic-bezier(0.2, 0.0, 0.2, 1), opacity 0.12s ease-out, transform 0.12s ease-out;',
+            // Position properties (left/top/width/height/border-radius) are
+            // NOT transitioned: every position write happens during either
+            // a navigation move (jumps to a new focusable) or scroll-
+            // tracking (page smooth-scrolls, ring must follow 1:1). In
+            // both cases the apparent motion is dominated by the page or
+            // the focus jump, NOT by an easing curve — adding a 140ms
+            // position transition produced a visible "ring slides off and
+            // returns to settle" lag against the actual element motion.
+            // Opacity + transform stay transitioned so fade-in / fade-out
+            // and the show-scale pop-in remain smooth.
+            '  transition: opacity 0.12s ease-out, transform 0.12s ease-out;',
             `  outline: ${config.outlineWidth}px solid rgb(var(--sn-focus-rgb));`,
             `  outline-offset: ${config.outlineOffset}px;`,
             `  background-color: rgba(var(--sn-focus-rgb), var(--sn-scrim-alpha));`,
@@ -1228,6 +1541,14 @@ body *:focus, body *:focus-visible {
             '}',
             `#${focusOverlayId}.visible {`,
             '  opacity: 1;',
+            '}',
+            // `.snap` is applied for one frame by `showOverlay` when the
+            // new position is a big jump (cross-viewport navigation). The
+            // overlay snaps to the new coords without animating through
+            // the empty intervening space, then the transition is
+            // restored for subsequent scroll-tracking updates.
+            `#${focusOverlayId}.snap {`,
+            '  transition: none !important;',
             '}',
             `#${focusOverlayId}.click-animate {`,
             '  transform: scale(0.96) !important;',
@@ -1326,6 +1647,28 @@ body *:focus, body *:focus-visible {
             '    animation: none;',
             '  }',
             '}',
+            // Visibility gate — when `visibilityMode === 'hardware-nav-only'`,
+            // hide the entire shadow subtree (ring + previews + label + HUD)
+            // by default and reveal only when the host writes
+            // `data-modality="hardware-nav" data-ring="visible"` on
+            // `#spatnav-focus-host`. The host is responsible for writing
+            // the attributes; the wrapper (e.g. `FocusStyleManager`) does
+            // this from its touch-aware state machine. Default-hidden so a
+            // missing attribute keeps the overlay invisible — fail-safe.
+            ...(config.visibilityMode === 'hardware-nav-only'
+                ? [
+                    ':host {',
+                    '  opacity: 0;',
+                    '  transition: opacity 220ms cubic-bezier(0.2, 0, 0, 1);',
+                    '}',
+                    ':host([data-modality="hardware-nav"][data-ring="visible"]) {',
+                    '  opacity: 1;',
+                    '}',
+                    '@media (prefers-reduced-motion: reduce) {',
+                    '  :host { transition: none; }',
+                    '}',
+                ]
+                : []),
         ].join('\n');
     }
     /**
@@ -1334,6 +1677,15 @@ body *:focus, body *:focus-visible {
      */
     function showOverlay(element, state, pulse = false) {
         if (!state.overlay || !element) {
+            // [diag] log.info survives the debug bundle. Switch the plugin
+            // asset bundle to spatial_navigation.debug.js to capture these
+            // via adb logcat | grep SpatialNav while debugging the
+            // "ring vanishes mid-scroll" bug.
+            log$f.info('showOverlay(null) — clearing visible class', {
+                hasOverlay: !!state.overlay,
+                hasElement: !!element,
+                overlaySuppressed: state.overlaySuppressed,
+            });
             if (state.overlay) {
                 state.overlay.classList.remove('visible');
             }
@@ -1348,6 +1700,12 @@ body *:focus, body *:focus-visible {
         // Get the visual bounds using our consolidated logic
         const rect = calculateVisualRect(element);
         const overlay = state.overlay;
+        // [diag] Snapshot of the inputs to the position-write inlined in
+        // the message string — Gecko's console pipe stringifies the data
+        // object as `[object Object]`, hiding the values when read via
+        // adb logcat. The inline form survives the pipe.
+        const tag = element.tagName.toLowerCase() + (element.id ? '#' + element.id : '');
+        log$f.info(`showOverlay(target=${tag}) rect=[L=${rect.left.toFixed(1)} T=${rect.top.toFixed(1)} R=${rect.right.toFixed(1)} B=${rect.bottom.toFixed(1)}] W×H=${rect.width.toFixed(1)}×${rect.height.toFixed(1)} VP=${window.innerWidth}×${window.innerHeight} scrollY=${window.scrollY} prev=(${overlay.style.left || '?'},${overlay.style.top || '?'}) wasVisible=${overlay.classList.contains('visible')} wasSnap=${overlay.classList.contains('snap')}`);
         // Match element's border-radius
         const computed = window.getComputedStyle(element);
         const borderRadius = computed.borderRadius || '4px';
@@ -1355,28 +1713,125 @@ body *:focus, body *:focus-visible {
         const config = state.config;
         const outlineOffset = config.outlineOffset || 3;
         const outlineWidth = config.outlineWidth || 3;
-        const safeAreaMargin = Math.max(0, config.safeAreaMargin ?? 0);
-        const totalMargin = outlineWidth + outlineOffset + 2 + safeAreaMargin; // Extra safety buffer
-        log$e.debug(`overlay positioned on ${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}`, {
+        // The overlay used to inset by `outlineWidth + outlineOffset + 2 +
+        // safeAreaMargin`, which produced visibly-short rings around content
+        // touching the viewport edge — a hero image flush against the left
+        // side rendered with a 20px gap on its left, looking like the
+        // outline was cropped mid-stroke. The new policy: clamp ONLY to
+        // keep the outline stroke itself visible (outlineWidth + outlineOffset
+        // pixels can extend outside the viewport before the stroke vanishes).
+        // `safeAreaMargin` is intentionally NOT applied to the ring — it
+        // remains a floating-UI inset for chevrons / labels only. Edge-flush
+        // content now renders edge-flush rings, matching user perception.
+        const outlineExtent = outlineWidth + outlineOffset;
+        log$f.debug(`overlay positioned on ${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}`, {
             L: rect.left.toFixed(1),
             T: rect.top.toFixed(1),
             W: rect.width.toFixed(1),
             H: rect.height.toFixed(1),
         });
+        // Clamp only enough to keep the outline visible. CSS `outline` paints
+        // outside the box, so the stroke can extend up to `outlineExtent` px
+        // past the viewport edge and still partially render. Clamping the
+        // box position by `-outlineExtent` keeps a sliver visible at the
+        // hard edge case without insetting away from edge-flush content.
+        const clampedLeft = Math.max(-outlineExtent, rect.left);
+        const clampedTop = Math.max(-outlineExtent, rect.top);
+        const clampedRight = Math.min(window.innerWidth + outlineExtent, rect.right);
+        const clampedBottom = Math.min(window.innerHeight + outlineExtent, rect.bottom);
+        // If the clamped box has non-positive dimensions, the focused
+        // element is fully outside the viewport (mid-scroll into an
+        // off-screen navigation target, or page scrolled past the focused
+        // element while focus stayed put).
+        //
+        // Earlier patches tried to handle this by either letting the
+        // negative dimensions produce a CSS 0×0 box (invisible) or
+        // explicitly removing the `visible` class. Both produced the
+        // user-reported "focus ring vanishes after viewport shift" bug
+        // because the ring abruptly disappeared mid-scroll.
+        //
+        // The correct behaviour is to keep the overlay rendered at the
+        // element's REAL viewport-space coordinates (which may be off-
+        // screen) so the browser clips it naturally. As the page scrolls,
+        // the overlay tracks the element off-screen and back on the same
+        // motion path — the user perceives a single smooth slide instead
+        // of a vanish/reappear.
+        const fullyOffViewport = clampedRight <= clampedLeft || clampedBottom <= clampedTop;
+        const renderLeft = fullyOffViewport ? rect.left : clampedLeft;
+        const renderTop = fullyOffViewport ? rect.top : clampedTop;
+        const renderWidth = fullyOffViewport ? Math.max(rect.width, 1) : clampedRight - clampedLeft;
+        const renderHeight = fullyOffViewport ? Math.max(rect.height, 1) : clampedBottom - clampedTop;
+        if (fullyOffViewport) {
+            // [diag] Path matters: fully-off-viewport elements used to be
+            // hidden which produced the user-reported vanish. We now render
+            // at raw rect coords and let the browser clip.
+            log$f.info('showOverlay: fully-off-viewport — render at raw rect (browser clips)', {
+                renderLeft: renderLeft.toFixed(1),
+                renderTop: renderTop.toFixed(1),
+                renderWidth: renderWidth.toFixed(1),
+                renderHeight: renderHeight.toFixed(1),
+                direction: rect.top > window.innerHeight
+                    ? 'below'
+                    : rect.bottom < 0
+                        ? 'above'
+                        : rect.left > window.innerWidth
+                            ? 'right'
+                            : 'left',
+            });
+        }
+        // Big position jumps (cross-viewport navigation, e.g. user pressed
+        // Down on the last visible focusable and we navigated to an
+        // off-screen target via pass-2 scoring) should NOT animate the
+        // overlay through the empty intervening space. Detect a big jump
+        // by comparing the new top/left against the previous render and
+        // snap (disable transition for one frame) when the delta exceeds
+        // a viewport-derived threshold. Within-viewport nudges still
+        // animate smoothly via the default CSS transition.
+        //
+        // IMPORTANT: capture `overlayWasHidden` BEFORE adding the `visible`
+        // class — re-entering visibility from a hidden state is always a
+        // snap because there's no meaningful previous render to animate
+        // from. Also snap whenever we cross the in-viewport ↔ off-viewport
+        // threshold — the apparent motion of the overlay is dominated by
+        // the page scroll, not by an easing curve.
+        const SNAP_THRESHOLD_PX = 200;
+        const prevLeft = parseFloat(overlay.style.left || '0');
+        const prevTop = parseFloat(overlay.style.top || '0');
+        const overlayWasHidden = !overlay.classList.contains('visible');
+        const jumped = overlayWasHidden ||
+            fullyOffViewport ||
+            Math.abs(renderLeft - prevLeft) > SNAP_THRESHOLD_PX ||
+            Math.abs(renderTop - prevTop) > SNAP_THRESHOLD_PX;
+        if (jumped) {
+            const reason = overlayWasHidden
+                ? 'wasHidden'
+                : fullyOffViewport
+                    ? 'fullyOffViewport'
+                    : `delta>${SNAP_THRESHOLD_PX}px`;
+            log$f.info(`showOverlay: snap applied (reason=${reason}, dL=${Math.abs(renderLeft - prevLeft).toFixed(1)}, dT=${Math.abs(renderTop - prevTop).toFixed(1)})`);
+            overlay.classList.add('snap');
+            // Re-enable the transition on the next frame after the new
+            // position has been committed. Using TWO rAF ticks ensures the
+            // browser has computed layout with `transition: none` before
+            // we restore the easing-based transition.
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    overlay.classList.remove('snap');
+                });
+            });
+        }
         overlay.style.display = 'block';
         overlay.classList.add('visible');
-        // Apply positions with viewport clamping to prevent outline from being cut at edges
-        const left = Math.max(totalMargin, rect.left);
-        const top = Math.max(totalMargin, rect.top);
-        const right = Math.min(window.innerWidth - totalMargin, rect.right);
-        const bottom = Math.min(window.innerHeight - totalMargin, rect.bottom);
-        overlay.style.left = left + 'px';
-        overlay.style.top = top + 'px';
-        overlay.style.width = right - left + 'px';
-        overlay.style.height = bottom - top + 'px';
+        overlay.style.left = renderLeft + 'px';
+        overlay.style.top = renderTop + 'px';
+        overlay.style.width = renderWidth + 'px';
+        overlay.style.height = renderHeight + 'px';
         overlay.style.borderRadius = effectiveRadius;
         updateDebugHud(state);
-        updateFocusLabel(state, element, { left, top, width: right - left});
+        updateFocusLabel(state, element, {
+            left: renderLeft,
+            top: renderTop,
+            width: renderWidth});
         // Remove native focus outline
         try {
             element.style.setProperty('outline', 'none', 'important');
@@ -1385,7 +1840,11 @@ body *:focus, body *:focus-visible {
         catch {
             // ignore
         }
-        if (pulse) {
+        // The `.pulse` keyframe animation hardcodes the legacy amber
+        // `rgba(255, 193, 7, …)` fallback and clashes with the
+        // Material-Blue-800 default — gated on `enableFocusPulse` so hosts
+        // that customise their ring colour can opt back in.
+        if (pulse && state.config.enableFocusPulse) {
             overlay.classList.remove('pulse');
             void overlay.offsetWidth;
             overlay.classList.add('pulse');
@@ -1401,15 +1860,15 @@ body *:focus, body *:focus-visible {
                 if (currentActive === element) {
                     // FIX: Use calculateVisualRect here too to maintain the logo/image expansion
                     const newRect = calculateVisualRect(element);
-                    // Also apply clamping here for consistency
+                    // Use the same edge-flush clamp policy as the main path
+                    // (see comment in `showOverlay` above for rationale).
                     const outlineOffset = state.config.outlineOffset || 3;
                     const outlineWidth = state.config.outlineWidth || 3;
-                    const safeAreaMargin = Math.max(0, state.config.safeAreaMargin ?? 0);
-                    const totalMargin = outlineWidth + outlineOffset + 2 + safeAreaMargin;
-                    const left = Math.max(totalMargin, newRect.left);
-                    const top = Math.max(totalMargin, newRect.top);
-                    const right = Math.min(window.innerWidth - totalMargin, newRect.right);
-                    const bottom = Math.min(window.innerHeight - totalMargin, newRect.bottom);
+                    const outlineExtent = outlineWidth + outlineOffset;
+                    const left = Math.max(-outlineExtent, newRect.left);
+                    const top = Math.max(-outlineExtent, newRect.top);
+                    const right = Math.min(window.innerWidth + outlineExtent, newRect.right);
+                    const bottom = Math.min(window.innerHeight + outlineExtent, newRect.bottom);
                     overlay.style.left = left + 'px';
                     overlay.style.top = top + 'px';
                     overlay.style.width = right - left + 'px';
@@ -1424,6 +1883,14 @@ body *:focus, body *:focus-visible {
      * Hide the focus overlay.
      */
     function hideOverlay(state) {
+        // [diag] Every code path that removes the `visible` class lands here
+        // OR in `showOverlay(null)`. If you're chasing a "ring vanishes"
+        // bug, the call site appears just above this line in the stack.
+        log$f.info('hideOverlay() — removing visible class', {
+            wasVisible: state.overlay?.classList.contains('visible'),
+            overlaySuppressed: state.overlaySuppressed,
+            stack: new Error('hideOverlay call site').stack?.split('\n').slice(1, 4).join(' | '),
+        });
         if (state.overlay) {
             state.overlay.classList.remove('visible');
         }
@@ -1446,6 +1913,16 @@ body *:focus, body *:focus-visible {
      * Includes disabled state animation for boundary conditions.
      */
     const previewDirectionKeys = ['up', 'down', 'left', 'right'];
+    /**
+     * Constant gap (in CSS pixels) between the focus ring's outer edge and
+     * the chevron's near edge. Matches the default `outline-width (3) +
+     * outline-offset (3) + 8` of breathing room, so the chevron renders at
+     * roughly the same visible distance from the ring across all focused
+     * elements regardless of their size. Previously this was proportional
+     * to chevron size, which produced visibly inconsistent gaps (tighter on
+     * small buttons, wider on large images).
+     */
+    const CHEVRON_RING_GAP = 14;
     /**
      * Create or retrieve preview elements for all directions.
      *
@@ -1499,15 +1976,21 @@ body *:focus, body *:focus-visible {
             }
         });
     }
-    function clamp$1(value, min, max) {
-        return Math.min(Math.max(value, min), max);
-    }
     function showChevronPreview(entry, direction, currentRect, safeAreaMargin = 0) {
         if (!entry || !entry.container || !currentRect) {
             return;
         }
         const size = Math.max(14, Math.min(26, Math.round(Math.min(currentRect.width, currentRect.height) * 0.28)));
-        const offset = Math.max(10, Math.round(size * 0.75));
+        // Constant chevron-to-ring gap regardless of focused-element size.
+        // The previous `offset = max(10, round(size * 0.75))` formula scaled
+        // the gap with chevron size, so a small button got a ~11px gap and
+        // a large image got a ~17px gap — visually inconsistent (most
+        // noticeable on the Dart logo: its ring uses the 200×80 image rect
+        // → larger chevron → wider gap; adjacent small links had a tight
+        // gap). A constant offset matches the ring's own outline extent
+        // (outline width + outline-offset) so the chevron always appears
+        // the same fixed distance outside the ring.
+        const offset = CHEVRON_RING_GAP;
         let left = currentRect.left;
         let top = currentRect.top;
         switch (direction) {
@@ -1530,9 +2013,21 @@ body *:focus, body *:focus-visible {
         }
         const viewportW = window?.innerWidth ?? 0;
         const viewportH = window?.innerHeight ?? 0;
-        const safe = Math.max(0, safeAreaMargin || 0);
-        left = clamp$1(left, safe, Math.max(safe, viewportW - safe - size));
-        top = clamp$1(top, safe, Math.max(safe, viewportH - safe - size));
+        const CHEVRON_VIEWPORT_PAD = 4;
+        const fitsHorizontally = left >= CHEVRON_VIEWPORT_PAD && left + size <= viewportW - CHEVRON_VIEWPORT_PAD;
+        const fitsVertically = top >= CHEVRON_VIEWPORT_PAD && top + size <= viewportH - CHEVRON_VIEWPORT_PAD;
+        if (!fitsHorizontally || !fitsVertically) {
+            entry.container.style.left = '';
+            entry.container.style.top = '';
+            entry.container.style.width = '';
+            entry.container.style.height = '';
+            entry.container.style.opacity = '';
+            entry.container.className = 'focus-preview focus-preview-' + direction;
+            if (entry.arrow) {
+                entry.arrow.style.display = '';
+            }
+            return;
+        }
         entry.container.style.left = left + 'px';
         entry.container.style.top = top + 'px';
         entry.container.style.width = size + 'px';
@@ -1561,9 +2056,41 @@ body *:focus, body *:focus-visible {
             state.nextTargets = result;
             return result;
         }
+        // When `boundaryScrollBehavior` is `'scroll'`, a vertical press that
+        // hits the boundary triggers `window.scrollBy` — the press IS
+        // actionable even with no in-viewport candidate. Show the chevron in
+        // that case so the user has a hint of the scroll affordance.
+        // Horizontal directions stay strict (no horizontal scroll-on-boundary).
+        const scrollOnBoundary = state.config.boundaryScrollBehavior === 'scroll';
         previewDirectionKeys.forEach(function (direction) {
             const dir = directionByName[direction];
-            result[direction] = findDirectionalCandidate(currentIndex, dir, state);
+            const candidate = findDirectionalCandidate(currentIndex, dir, state);
+            // Drop pass-(-1) (wrap-around) — surprising teleport across
+            // the page, never represent as a chevron.
+            if (candidate && candidate.passIndex === -1) {
+                result[direction] = null;
+                return;
+            }
+            // Drop pass-2 ("wide-net, requireViewport:false") chevrons UNLESS
+            // (a) `boundaryScrollBehavior` is `'scroll'` AND (b) direction is
+            // vertical — in which case the press will scroll the viewport
+            // toward the target. Without (a)+(b), pass-2 chevrons would
+            // mislead: they'd point to off-screen targets that the move path
+            // could reach but the user wouldn't visually expect.
+            //
+            // Rationale: the move path (handleKeyDown → moveInDirection) calls
+            // findDirectionalCandidate directly without this filter, so it can
+            // STILL reach those wide-net targets when the user presses an arrow.
+            // Filtering at the preview layer (not the move layer) keeps the
+            // chevrons honest about close-by reachable targets.
+            if (candidate && candidate.passIndex === 2) {
+                const isVerticalScroll = scrollOnBoundary && (direction === 'up' || direction === 'down');
+                if (!isVerticalScroll) {
+                    result[direction] = null;
+                    return;
+                }
+            }
+            result[direction] = candidate;
         });
         state.nextTargets = result;
         return result;
@@ -1589,8 +2116,7 @@ body *:focus, body *:focus-visible {
             state.nextTargets = { up: null, down: null, left: null, right: null };
             return;
         }
-        // Unused but kept for API compatibility or future use
-        const _rect = currentElement.getBoundingClientRect();
+        const _rect = calculateVisualRect(currentElement);
         const targets = updatePreviewTargets(state.currentIndex, findDirectionalCandidate, directionByName, state);
         previewDirectionKeys.forEach(function (direction) {
             const entry = elements[direction];
@@ -1919,13 +2445,13 @@ body *:focus, body *:focus-visible {
      *
      * Keeps geometry in sync for lazily-loaded elements that enter the viewport.
      */
-    const log$d = createLogger('Intersection');
+    const log$e = createLogger('Intersection');
     function supportsIntersectionObserver() {
         return typeof window !== 'undefined' && typeof window.IntersectionObserver !== 'undefined';
     }
     function createObserver(state) {
         if (!supportsIntersectionObserver()) {
-            log$d.debug('IntersectionObserver unsupported in this environment');
+            log$e.debug('IntersectionObserver unsupported in this environment');
             return null;
         }
         const config = state.config; // Assuming proper config
@@ -2017,7 +2543,7 @@ body *:focus, body *:focus-visible {
      * Handles element discovery, focus management, and element description.
      * Features Shadow DOM traversal, virtual scroll detection, and accessibility announcer.
      */
-    const log$c = createLogger('DOM');
+    const log$d = createLogger('DOM');
     /** Threshold above which a focusable refresh is logged as slow (ms). */
     const SLOW_REFRESH_THRESHOLD_MS = 50;
     const focusableSelector = 'a[href], a[aria-haspopup], [role="link"], button:not([disabled]), [role="button"], [aria-haspopup="true"], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
@@ -2076,7 +2602,7 @@ body *:focus, body *:focus-visible {
             }
         }
         catch (e) {
-            log$c.warn('shadow DOM traversal error', e);
+            log$d.warn('shadow DOM traversal error', e);
         }
         // Flatten slot assignments (distributed content)
         try {
@@ -2151,7 +2677,7 @@ body *:focus, body *:focus-visible {
         if (containers.length === 0) {
             return;
         }
-        log$c.debug(`detected ${containers.length} virtual scroll containers`);
+        log$d.debug(`detected ${containers.length} virtual scroll containers`);
         const debounceMs = config.virtualScrollDebounce || 150;
         let debounceTimer = null;
         const observer = new IntersectionObserver((entries) => {
@@ -2162,7 +2688,7 @@ body *:focus, body *:focus-visible {
                     clearTimeout(debounceTimer);
                 }
                 debounceTimer = setTimeout(() => {
-                    log$c.debug('virtual scroll sentinel triggered refresh');
+                    log$d.debug('virtual scroll sentinel triggered refresh');
                     refreshFocusables(state);
                     state.virtualScrollPending = false;
                     state.dirty = true; // Invalidate precomputed cache
@@ -2220,7 +2746,7 @@ body *:focus, body *:focus-visible {
                     'white-space: nowrap !important;' +
                     'border: 0 !important;';
             document.body.appendChild(announcer);
-            log$c.debug('accessibility announcer created');
+            log$d.debug('accessibility announcer created');
         }
         state.announcer = announcer;
     }
@@ -2343,12 +2869,12 @@ body *:focus, body *:focus-visible {
         let nodes;
         if (config.traverseShadowDom) {
             nodes = findFocusablesDeep(document, config);
-            log$c.debug(`shadow DOM traversal found ${nodes.length} focusables`);
+            log$d.debug(`shadow DOM traversal found ${nodes.length} focusables`);
         }
         else {
             nodes = Array.from(document.querySelectorAll(focusableSelector));
         }
-        log$c.debug(`candidate nodes found: ${nodes.length}`);
+        log$d.debug(`candidate nodes found: ${nodes.length}`);
         // Add iframes if iframe support is enabled
         if (config.iframeSupport && config.iframeSupport.enabled) {
             try {
@@ -2360,7 +2886,7 @@ body *:focus, body *:focus-visible {
                 });
             }
             catch (err) {
-                log$c.warn('iframe selector failed', err);
+                log$d.warn('iframe selector failed', err);
             }
         }
         const results = [];
@@ -2450,7 +2976,7 @@ body *:focus, body *:focus-visible {
             state.perf.lastRefreshTime = duration;
             if (duration > SLOW_REFRESH_THRESHOLD_MS) {
                 state.perf.slowRefreshCount++;
-                log$c.warn(`slow refresh: ${duration.toFixed(2)}ms (${results.length} elements)`);
+                log$d.warn(`slow refresh: ${duration.toFixed(2)}ms (${results.length} elements)`);
             }
         }
     }
@@ -2480,6 +3006,35 @@ body *:focus, body *:focus-visible {
             }
             catch {
                 /* ignore */
+            }
+        }
+    }
+    /**
+     * Focus the initial element on the page.
+     *
+     * @param force - Force focus even if something is already focused
+     * @param state - Global state object
+     * @returns True if element was focused
+     */
+    function focusInitialElement(force, state) {
+        if (!state.focusables || state.focusables.length === 0) {
+            return false;
+        }
+        const firstEntry = state.focusables[0];
+        if (!firstEntry || !firstEntry.element) {
+            return false;
+        }
+        try {
+            firstEntry.element.focus({ preventScroll: true });
+            return true;
+        }
+        catch {
+            try {
+                firstEntry.element.focus();
+                return true;
+            }
+            catch {
+                return false;
             }
         }
     }
@@ -2524,7 +3079,7 @@ body *:focus, body *:focus-visible {
         state.focusables.forEach((e, i) => (e.index = i));
         state.focusableCount = state.focusables.length;
         observeNewElement(state, el);
-        log$c.debug('inserted entry', describeElement(el));
+        log$d.debug('inserted entry', describeElement(el));
     }
     /**
      * Remove a focusable entry from the state by index.
@@ -2538,7 +3093,7 @@ body *:focus, body *:focus-visible {
             return;
         }
         const entry = state.focusables[idx];
-        log$c.debug('removing entry', describeElement(entry.element));
+        log$d.debug('removing entry', describeElement(entry.element));
         // Remove from focus group
         if (entry.groupId) {
             const group = state.focusGroups[entry.groupId];
@@ -2602,7 +3157,7 @@ body *:focus, body *:focus-visible {
                 }
             }
         }
-        log$c.debug(`incremental refresh complete: ${state.focusables.length} focusables`);
+        log$d.debug(`incremental refresh complete: ${state.focusables.length} focusables`);
     }
 
     /**
@@ -2726,7 +3281,7 @@ body *:focus, body *:focus-visible {
      * — the comments there explain *why* `SAME_GROUP_BONUS > GROUP_ENTER_LAST_BONUS >
      * GRID_BONUS > scroll-related nudges` is the right ordering.
      */
-    const log$b = createLogger('Scoring');
+    const log$c = createLogger('Scoring');
     /**
      * Calculate distance between two points using specified function.
      */
@@ -2965,12 +3520,27 @@ body *:focus, body *:focus-visible {
             return null;
         const passes = [
             // Pass 1: strict — same viewport, strict edges
+            // alignmentWeight bumped from 10 → 200 to prevent the
+            // "horizontal carousel LEFT picks title-below-sibling" bug:
+            // PRIMARY_WEIGHT is 1000 so a single px of primary-axis advantage
+            // adds 1000 to a candidate`s score; with alignmentWeight=10, a
+            // candidate would need 100+ px of off-axis penalty to flip a 1 px
+            // primary win. For a 3-thumbnail carousel where each card`s
+            // title sits ~135 px below the card (`a.summary-thumbnail` row
+            // at Y=2498, `a.summary-title-link` row at Y=2715), the
+            // sibling-thumb on the same row is only 12 px further in the
+            // navigation axis than the off-row title — title was winning
+            // pass-0 scoring (15,681 vs 26,326). Bumping alignmentWeight to
+            // 200 in the strict pass makes the 134 px secondary cost
+            // 26,800 — comfortably more than the 12,000 primary advantage —
+            // so the row-aligned sibling wins. Pass 1/2 stay relaxed so
+            // wrap-row fallback navigation isn`t affected.
             {
                 strictEdges: true,
                 allowOverlap: false,
                 requireViewport: true,
                 viewportMargin: 0,
-                alignmentWeight: 10,
+                alignmentWeight: 200,
                 distanceWeight: 1,
                 preferScrollGroup: true,
             },
@@ -3002,7 +3572,7 @@ body *:focus, body *:focus-visible {
                 return candidate;
             }
         }
-        log$b.debug(`no candidate for ${direction.name} after ${passes.length} passes`);
+        log$c.debug(`no candidate for ${direction.name} after ${passes.length} passes`);
         const config = getConfig();
         if (config.wrapNavigation) {
             return findWrapCandidate(currentIndex, direction, state);
@@ -3190,7 +3760,7 @@ body *:focus, body *:focus-visible {
      * Centralizes browser/chrome runtime messaging with consistent
      * Promise/callback handling and error formatting.
      */
-    const log$a = createLogger('Bridge');
+    const log$b = createLogger('Bridge');
     /**
      * Get the runtime API (browser.runtime or chrome.runtime).
      * Returns null if no extension bridge is available.
@@ -3229,13 +3799,13 @@ body *:focus, body *:focus-visible {
         const runtime = getRuntimeApi();
         if (!runtime) {
             if (options.debug) {
-                log$a.debug('No extension bridge available');
+                log$b.debug('No extension bridge available');
             }
             return { success: false, error: 'No extension bridge available' };
         }
         try {
             if (options.debug) {
-                log$a.debug(`Sending message: ${safeJson(message)}`);
+                log$b.debug(`Sending message: ${safeJson(message)}`);
             }
             if (isFirefoxStyle()) {
                 // Firefox-style Promise API
@@ -3244,13 +3814,13 @@ body *:focus, body *:focus-visible {
                     try {
                         const response = await result;
                         if (options.debug) {
-                            log$a.debug(`Response (promise): ${safeJson(response)}`);
+                            log$b.debug(`Response (promise): ${safeJson(response)}`);
                         }
                         return { success: true, response };
                     }
                     catch (error) {
                         const errorMessage = formatBridgeError(error);
-                        log$a.error(`Bridge error (promise): ${errorMessage}`);
+                        log$b.error(`Bridge error (promise): ${errorMessage}`);
                         return { success: false, error: errorMessage };
                     }
                 }
@@ -3265,12 +3835,12 @@ body *:focus, body *:focus-visible {
                         const lastError = runtimeWithError.lastError;
                         if (lastError) {
                             const errorMessage = formatBridgeError(lastError);
-                            log$a.error(`Bridge error (callback): ${errorMessage}`);
+                            log$b.error(`Bridge error (callback): ${errorMessage}`);
                             resolve({ success: false, error: errorMessage });
                         }
                         else {
                             if (options.debug) {
-                                log$a.debug(`Response (callback): ${safeJson(typedResponse)}`);
+                                log$b.debug(`Response (callback): ${safeJson(typedResponse)}`);
                             }
                             resolve({ success: true, response: typedResponse });
                         }
@@ -3280,7 +3850,7 @@ body *:focus, body *:focus-visible {
         }
         catch (error) {
             const errorMessage = formatBridgeError(error);
-            log$a.error(`Bridge exception: ${errorMessage}`);
+            log$b.error(`Bridge exception: ${errorMessage}`);
             return { success: false, error: errorMessage };
         }
     }
@@ -3324,6 +3894,124 @@ body *:focus, body *:focus-visible {
             direction,
             inTrap,
         });
+    }
+
+    /**
+     * Focus recovery and overlay update helpers for Spatial Navigation System
+     *
+     * These utilities are extracted from handlers.ts to reduce coupling
+     * and prevent circular dependencies with observer.ts.
+     */
+    const log$a = createLogger('Focus');
+    /**
+     * Schedule an overlay update with requestAnimationFrame.
+     * Respects overlay suppression state for focus-exit scenarios.
+     *
+     * @param target - Target element to highlight
+     * @param state - Global state object
+     */
+    function scheduleOverlayUpdate(target, state) {
+        if (state.overlaySuppressed) {
+            // [diag] If "ring vanished" coincides with this branch firing,
+            // the bug is upstream — someone set `overlaySuppressed = true`
+            // before scroll-tracking could re-position. Cross-reference the
+            // adjacent "suppressOverlay(reason=...)" log to identify the
+            // culprit.
+            // Promoted to log.warn so prod traces show when scheduleOverlayUpdate
+            // is gated (this is THE smoking-gun signal for "ring should be
+            // visible but isn`t" reports).
+            log$a.warn(`scheduleOverlayUpdate: SKIPPED — overlaySuppressed=true target=${target ? target.tagName.toLowerCase() : '(null)'}`);
+            // Ensure no pending overlay update re-shows the overlay after an exit.
+            if (state.updateTimer) {
+                cancelAnimationFrame(state.updateTimer);
+                state.updateTimer = null;
+            }
+            if (target && target.nodeType === 1) {
+                state.lastFocusedElement = target;
+            }
+            return;
+        }
+        if (state.updateTimer) {
+            cancelAnimationFrame(state.updateTimer);
+        }
+        state.updateTimer = requestAnimationFrame(function () {
+            if (state.overlaySuppressed) {
+                state.updateTimer = null;
+                return;
+            }
+            showOverlay(target, state, true);
+            const dirMap = directionByName;
+            updatePreviewVisuals(target, null, findDirectionalCandidate, dirMap, describeElement, state);
+            // Update instrumentation for tests
+            if (state.instrumentation) {
+                state.instrumentation.lastActive = describeElement(target) || 'EMPTY_DESC';
+                state.instrumentation.lastOverlay = describeElement(target);
+                state.instrumentation.activeIndex = state.focusableElements
+                    ? state.focusableElements.indexOf(target)
+                    : -1;
+                state.instrumentation.lastUpdate = Date.now();
+            }
+            if (target && target.nodeType === 1) {
+                state.lastFocusedElement = target;
+            }
+            state.updateTimer = null;
+        });
+    }
+    /**
+     * Store the current focus position as a hint for recovery.
+     * Called before DOM mutations to preserve geometric position.
+     * This prevents "popping to top" when virtual scroll recycles the focused element.
+     *
+     * @param state - Global state object
+     */
+    function storePositionHint(state) {
+        const active = getActiveElement();
+        if (!active || !(active instanceof HTMLElement)) {
+            return;
+        }
+        const currentIndex = state.focusableElements.indexOf(active);
+        if (currentIndex === -1) {
+            return;
+        }
+        const entry = state.focusables[currentIndex];
+        if (!entry || !entry.rect) {
+            return;
+        }
+        state.lastFocusPosition = {
+            centerX: entry.centerX,
+            centerY: entry.centerY,
+            top: entry.top,
+            left: entry.left,
+            elementDesc: describeElement(active),
+            timestamp: Date.now(),
+        };
+        {
+            log$a.debug(`Stored position hint: ${state.lastFocusPosition.elementDesc} at (${entry.centerX.toFixed(0)}, ${entry.centerY.toFixed(0)})`);
+        }
+    }
+    /**
+     * Atomically clear `overlaySuppressed` AND any pending auto-recover timer.
+     *
+     * Centralizes the cleanup that the four ad-hoc clear sites used to
+     * duplicate (with subtly different completeness): the moveInDirection
+     * entry point, the auto-recover timer callback, the
+     * `spatnav-clear-suppress` event listener, and the
+     * `spatnav-engage-overlay` event listener. The latter two cancelled the
+     * pending timer; the former two did not. If a new
+     * `spatialNavigationExit` auto-recover is pending and the user
+     * successfully D-pads to a new target (movement.ts:247), the orphan
+     * timer would fire 350ms later, observe `!overlaySuppressed`, and
+     * harmlessly bail — but on a subsequent suppression race it could
+     * resurrect a stale state. One helper, one invariant.
+     *
+     * @param state - Global state object
+     */
+    function clearOverlaySuppression(state) {
+        state.overlaySuppressed = false;
+        if (state.suppressRecoveryTimer != null) {
+            clearTimeout(state.suppressRecoveryTimer);
+            state.suppressRecoveryTimer = null;
+        }
     }
 
     /**
@@ -3445,30 +4133,42 @@ body *:focus, body *:focus-visible {
         }
         return findDirectionalCandidate(currentIndex, direction, state);
     }
-    /**
-     * Move focus in the specified direction.
-     * Includes focus trap detection, accessibility announcements, and candidate caching.
-     *
-     * @param direction - Direction object {axis, sign, name}
-     * @param event - Original keyboard event (optional)
-     * @param state - Global state object
-     * @returns True if focus moved, false otherwise
-     */
-    function moveInDirection(direction, event, state) {
-        if (state.overlaySuppressed) {
-            state.overlaySuppressed = false;
-        }
+    function moveInDirection(direction, event, state, options = {}) {
         const config = state.config;
         const active = getActiveElement();
         const currentIndex = active && active instanceof HTMLElement ? state.focusableElements.indexOf(active) : -1;
         if (currentIndex === -1) {
+            // Bail BEFORE clearing `overlaySuppressed` — we never actually
+            // attempted navigation. The previous order cleared the
+            // suppression flag eagerly at the top of the function, then
+            // returned `false` here without showing the overlay or wiring
+            // any recovery. That stranded the page in the "not suppressed,
+            // not shown" state until a NEW suppression source ran. Now the
+            // suppression flag only changes when a real navigation attempt
+            // begins.
             return false;
+        }
+        // Past the bail-out: we have a valid active focusable and are
+        // committing to a navigation attempt. Clear any in-flight
+        // suppression — AND cancel any pending recovery timer — so the
+        // overlay is free to follow the new target. The atomic helper
+        // matches the cleanup the listener sites in main.ts do, eliminating
+        // the prior asymmetry where a successful nav left an orphan timer
+        // that would fire 350ms later on stale state.
+        if (state.overlaySuppressed) {
+            clearOverlaySuppression(state);
         }
         const currentEntry = state.focusables[currentIndex];
         updateEntryGeometry(currentEntry, state);
         // Use cached candidate if available and fresh
         const target = getCachedOrComputeCandidate(currentIndex, direction, state);
         if (!target) {
+            // `notifyOnBoundary` defaults to `true` for backwards compatibility
+            // with direct callers (debug menu, scripts). The internal
+            // `handleKeyDown` retry sets it `false` on the first attempt to
+            // avoid double-firing analytics — see `MoveInDirectionOptions`
+            // doc-comment above.
+            const notifyOnBoundary = options.notifyOnBoundary !== false;
             // Focus trap detection
             const trapInfo = detectFocusTrap(currentEntry.element, config);
             // Dispatch navnotarget event with trap info
@@ -3479,50 +4179,127 @@ body *:focus, body *:focus-visible {
                 escapeElement: trapInfo?.closeButton ?? undefined,
                 escapeKey: trapInfo?.escapeKey,
             });
-            // Accessibility announcement for boundaries
-            if (config.announceBoundaries) {
-                if (trapInfo) {
-                    announce(`In ${trapInfo.trapId}. Press ${trapInfo.escapeKey} to close.`, state, 'polite');
+            if (notifyOnBoundary) {
+                // `boundaryScrollBehavior` controls what happens here:
+                //   - 'scroll': scroll the page by half a viewport in
+                //     vertical directions; suppress the host notification.
+                //     Falls through to 'exit' when the page is already at
+                //     the scroll extent in that direction — without that
+                //     fallthrough, the user can't escape the WebView once
+                //     they reach top/bottom of the page (no `focusExit` is
+                //     ever sent to the host).
+                //   - 'none': silent — no exit event, no scroll.
+                //   - 'exit' (default): dispatch `spatialNavigationExit` and
+                //     post `focusExit` to the native host.
+                const boundaryBehavior = config.boundaryScrollBehavior;
+                // Whether the exit-branch below was reached via fall-through
+                // from `boundaryScrollBehavior === 'scroll'` (no scroll room
+                // in the direction). In that case the host's `focusExit`
+                // handler should still get the chance to act (e.g. AAOS
+                // pulls focus to the address bar on `up`), but the extension
+                // MUST NOT pre-emptively suppress the overlay — for `down`
+                // at the page bottom the host typically does nothing and
+                // the suppress-then-auto-recover dance produces a visible
+                // 350ms "ring slides off and returns" artifact with no
+                // actual focus change.
+                let fellThroughFromScroll = false;
+                if (boundaryBehavior === 'scroll' && (direction.name === 'up' || direction.name === 'down')) {
+                    const scrollY = window.scrollY;
+                    const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+                    const hasScrollRoom = direction.name === 'up' ? scrollY > 0 : scrollY < maxScrollY - 1; // 1px tolerance for subpixel rounding
+                    if (hasScrollRoom) {
+                        try {
+                            const reducedMotion = window.matchMedia &&
+                                window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                            const step = Math.max(120, Math.round(window.innerHeight * 0.5));
+                            const delta = direction.name === 'down' ? step : -step;
+                            window.scrollBy({
+                                top: delta,
+                                behavior: reducedMotion ? 'auto' : 'smooth',
+                            });
+                            log$9.debug(`boundary scroll: ${direction.name} by ${delta}px`);
+                        }
+                        catch (e) {
+                            log$9.debug('boundary scroll failed', e);
+                        }
+                        if (state.nextTargets) {
+                            state.nextTargets[direction.name] = null;
+                        }
+                        state.currentTrap = trapInfo;
+                        return false;
+                    }
+                    // No scroll room — fall through to the 'exit' branch so
+                    // the user can escape (e.g., return to the native
+                    // address bar above the WebView). Mark the fall-through
+                    // so we skip the local overlay suppress below.
+                    fellThroughFromScroll = true;
+                    log$9.debug(`boundary ${direction.name}: no scroll room, falling through to exit`);
+                }
+                if (boundaryBehavior === 'none') {
+                    // Silent boundary — no exit dispatch, no scroll.
+                    if (state.nextTargets) {
+                        state.nextTargets[direction.name] = null;
+                    }
+                    state.currentTrap = trapInfo;
+                    return false;
+                }
+                // Default 'exit' behaviour. Also reached when
+                // `boundaryScrollBehavior === 'scroll'` had no scroll room
+                // (see fall-through above).
+                // Accessibility announcement for boundaries
+                if (config.announceBoundaries) {
+                    if (trapInfo) {
+                        announce(`In ${trapInfo.trapId}. Press ${trapInfo.escapeKey} to close.`, state, 'polite');
+                    }
+                    else {
+                        announce(`Edge of content. Cannot move ${direction.name}.`, state, 'polite');
+                    }
+                }
+                log$9.debug(`boundary reached, notifying native: ${direction.name}`);
+                sendFocusExit(direction.name, !!trapInfo)
+                    .then((result) => {
+                    if (!result.success) {
+                        log$9.debug('focusExit relay error', result.error);
+                    }
+                })
+                    .catch((e) => {
+                    log$9.debug('focusExit error', e);
+                });
+                if (!fellThroughFromScroll) {
+                    // Real exit (boundaryScrollBehavior:'exit' OR a
+                    // legitimately-unscrollable direction in 'scroll' mode
+                    // — i.e. horizontal). Dispatch the custom event so any
+                    // wrapper-side suppress-on-exit listener fires.
+                    try {
+                        const exitEvent = new CustomEvent('spatialNavigationExit', {
+                            detail: {
+                                direction: direction.name,
+                                inTrap: !!trapInfo,
+                                trapInfo: trapInfo,
+                            },
+                            bubbles: true,
+                            cancelable: false,
+                        });
+                        document.dispatchEvent(exitEvent);
+                    }
+                    catch (e) {
+                        log$9.warn('failed to dispatch exit event', e);
+                    }
+                    // Hide overlay & previews while focus exits to native UI.
+                    // Without suppression, mutation/scroll observers can re-show the overlay.
+                    state.overlaySuppressed = true;
+                    if (state.updateTimer) {
+                        cancelAnimationFrame(state.updateTimer);
+                        state.updateTimer = null;
+                    }
+                    hideOverlay(state);
+                    hidePreviewElements(state);
                 }
                 else {
-                    announce(`Edge of content. Cannot move ${direction.name}.`, state, 'polite');
+                    log$9.debug('scroll-fall-through exit — skipping local overlay suppress; ' +
+                        'host handler decides whether focus actually leaves');
                 }
             }
-            log$9.debug(`boundary reached, notifying native: ${direction.name}`);
-            sendFocusExit(direction.name, !!trapInfo)
-                .then((result) => {
-                if (!result.success) {
-                    log$9.debug('focusExit relay error', result.error);
-                }
-            })
-                .catch((e) => {
-                log$9.debug('focusExit error', e);
-            });
-            // Also dispatch custom event for web app listeners
-            try {
-                const exitEvent = new CustomEvent('spatialNavigationExit', {
-                    detail: {
-                        direction: direction.name,
-                        inTrap: !!trapInfo,
-                        trapInfo: trapInfo,
-                    },
-                    bubbles: true,
-                    cancelable: false,
-                });
-                document.dispatchEvent(exitEvent);
-            }
-            catch (e) {
-                log$9.warn('failed to dispatch exit event', e);
-            }
-            // Hide overlay & previews while focus exits to native UI.
-            // Without suppression, mutation/scroll observers can re-show the overlay.
-            state.overlaySuppressed = true;
-            if (state.updateTimer) {
-                cancelAnimationFrame(state.updateTimer);
-                state.updateTimer = null;
-            }
-            hideOverlay(state);
-            hidePreviewElements(state);
             if (state.nextTargets) {
                 state.nextTargets[direction.name] = null;
             }
@@ -3555,6 +4332,12 @@ body *:focus, body *:focus-visible {
             passIndex: typeof target.passIndex === 'number' ? target.passIndex : 0,
             timestamp: Date.now(),
         };
+        // log.info (stripped from prod bundle) so debug builds show which
+        // element wins the directional scoring without flooding prod
+        // logcat at navigation rate. Switch to the .debug.js bundle to
+        // capture these via adb when diagnosing "DOWN went somewhere
+        // unexpected" reports.
+        log$9.info(`moveInDirection(${direction.name}) from=${describeElement(currentEntry.element)} to=${describeElement(target.data.element)} passIndex=${target.passIndex ?? 0}`);
         simulatePointerEvents(currentEntry.element, target.data.element);
         const focusApplied = applyFocus(target.data.element, state);
         if (!focusApplied) {
@@ -3601,7 +4384,45 @@ body *:focus, body *:focus-visible {
                     else if (snapAlign.includes('end'))
                         inline = 'end';
                 }
-                target.data.element.scrollIntoView({ block: block, inline: inline });
+                // Add visual breathing room so the focus ring's outer halo
+                // (glow box-shadow + outline-offset) isn't clipped by the
+                // viewport edge when `block: 'nearest'` would snap the
+                // element flush against the edge.
+                //
+                // Previously this was a follow-up `scrollBy` in a nested
+                // `requestAnimationFrame`, which produced a visible
+                // "double-stage" focus settle (element snaps to the edge,
+                // then jumps 16 px inward one frame later). The fix:
+                // temporarily set `scroll-margin` on the target element
+                // BEFORE calling `scrollIntoView`. Native scroll math
+                // honours `scroll-margin` and bakes the buffer into the
+                // SINGLE atomic scroll — no second frame, no visible
+                // double-stage.
+                //
+                // We restore the prior inline `scroll-margin` after a
+                // microtask so page styles aren't permanently mutated.
+                const el = target.data.element;
+                const SCROLL_BUFFER = '16px';
+                const prevScrollMargin = el.style.scrollMargin;
+                try {
+                    el.style.scrollMargin = SCROLL_BUFFER;
+                    el.scrollIntoView({ block: block, inline: inline });
+                }
+                finally {
+                    // Restore on the next microtask so the scroll math runs
+                    // with the buffer applied, then the inline style is
+                    // cleared. We do NOT restore synchronously because some
+                    // browsers schedule the scroll computation off the main
+                    // thread and might re-read style mid-scroll.
+                    queueMicrotask(() => {
+                        try {
+                            el.style.scrollMargin = prevScrollMargin;
+                        }
+                        catch {
+                            // ignore
+                        }
+                    });
+                }
             }
             catch {
                 // ignore scroll failures
@@ -3811,91 +4632,6 @@ body *:focus, body *:focus-visible {
     }
 
     /**
-     * Focus recovery and overlay update helpers for Spatial Navigation System
-     *
-     * These utilities are extracted from handlers.ts to reduce coupling
-     * and prevent circular dependencies with observer.ts.
-     */
-    const log$8 = createLogger('Focus');
-    /**
-     * Schedule an overlay update with requestAnimationFrame.
-     * Respects overlay suppression state for focus-exit scenarios.
-     *
-     * @param target - Target element to highlight
-     * @param state - Global state object
-     */
-    function scheduleOverlayUpdate(target, state) {
-        if (state.overlaySuppressed) {
-            // Ensure no pending overlay update re-shows the overlay after an exit.
-            if (state.updateTimer) {
-                cancelAnimationFrame(state.updateTimer);
-                state.updateTimer = null;
-            }
-            if (target && target.nodeType === 1) {
-                state.lastFocusedElement = target;
-            }
-            return;
-        }
-        if (state.updateTimer) {
-            cancelAnimationFrame(state.updateTimer);
-        }
-        state.updateTimer = requestAnimationFrame(function () {
-            if (state.overlaySuppressed) {
-                state.updateTimer = null;
-                return;
-            }
-            showOverlay(target, state, true);
-            const dirMap = directionByName;
-            updatePreviewVisuals(target, null, findDirectionalCandidate, dirMap, describeElement, state);
-            // Update instrumentation for tests
-            if (state.instrumentation) {
-                state.instrumentation.lastActive = describeElement(target) || 'EMPTY_DESC';
-                state.instrumentation.lastOverlay = describeElement(target);
-                state.instrumentation.activeIndex = state.focusableElements
-                    ? state.focusableElements.indexOf(target)
-                    : -1;
-                state.instrumentation.lastUpdate = Date.now();
-            }
-            if (target && target.nodeType === 1) {
-                state.lastFocusedElement = target;
-            }
-            state.updateTimer = null;
-        });
-    }
-    /**
-     * Store the current focus position as a hint for recovery.
-     * Called before DOM mutations to preserve geometric position.
-     * This prevents "popping to top" when virtual scroll recycles the focused element.
-     *
-     * @param state - Global state object
-     */
-    function storePositionHint(state) {
-        const active = getActiveElement();
-        if (!active || !(active instanceof HTMLElement)) {
-            return;
-        }
-        const currentIndex = state.focusableElements.indexOf(active);
-        if (currentIndex === -1) {
-            return;
-        }
-        const entry = state.focusables[currentIndex];
-        if (!entry || !entry.rect) {
-            return;
-        }
-        state.lastFocusPosition = {
-            centerX: entry.centerX,
-            centerY: entry.centerY,
-            top: entry.top,
-            left: entry.left,
-            elementDesc: describeElement(active),
-            timestamp: Date.now(),
-        };
-        if (DEBUG) {
-            log$8.debug(`Stored position hint: ${state.lastFocusPosition.elementDesc} at (${entry.centerX.toFixed(0)}, ${entry.centerY.toFixed(0)})`);
-        }
-    }
-
-    /**
      * Menu-toggle handling helpers for Spatial Navigation.
      *
      * Some sites use hover-driven navigation menus that open on pointer enter and
@@ -3904,7 +4640,7 @@ body *:focus, body *:focus-visible {
      * closes them. We try a hover-exit first (cheap, doesn't move focus); if the
      * menu is still open we fall back to a synthetic "outside click".
      */
-    const log$7 = createLogger('MenuToggle');
+    const log$8 = createLogger('MenuToggle');
     const NAV_ROOT_DEPTH_LIMIT = 12;
     const HOVER_EXIT_INSET_PX = 8;
     const FALLBACK_FOCUS_RESTORE_DELAY_MS = 120;
@@ -4162,7 +4898,7 @@ body *:focus, body *:focus-visible {
         const submenuRect = menuState.submenu ? menuState.submenu.getBoundingClientRect() : null;
         const toggleRect = actionElement.getBoundingClientRect();
         const outside = pickOutsidePoint({ toggleRect, submenuRect, exclusions });
-        log$7.debug(`menu toggle OPEN (${menuState.reason}) — closing via hover-exit + outside click`, {
+        log$8.debug(`menu toggle OPEN (${menuState.reason}) — closing via hover-exit + outside click`, {
             toggle: describeElement(actionElement),
             ariaExpanded: menuState.ariaExpanded,
             submenu: menuState.submenu ? describeElement(menuState.submenu) : null,
@@ -4178,7 +4914,7 @@ body *:focus, body *:focus-visible {
         //    Outside clicks can steal focus or accidentally trigger nav chrome.
         const afterHover = detectMenuToggleState(actionElement);
         if (!afterHover.isOpen) {
-            log$7.debug(`menu closed via hover-exit (${menuState.reason}) — skipping outside click`);
+            log$8.debug(`menu closed via hover-exit (${menuState.reason}) — skipping outside click`);
             state.dirty = true;
             try {
                 actionElement.focus?.();
@@ -4207,7 +4943,7 @@ body *:focus, body *:focus-visible {
                 submenuRect: submenuRectNow,
                 exclusions,
             });
-            log$7.debug('menu still open — outside-click fallback', {
+            log$8.debug('menu still open — outside-click fallback', {
                 toggle: describeElement(actionElement),
                 outside: {
                     label: outsideNow.label,
@@ -4224,7 +4960,7 @@ body *:focus, body *:focus-visible {
                 const physicalX = outsideNow.x * dpr;
                 const physicalY = outsideNow.y * dpr;
                 try {
-                    log$7.debug('closing menu toggle via NATIVE outside click', {
+                    log$8.debug('closing menu toggle via NATIVE outside click', {
                         css: { x: outsideNow.x, y: outsideNow.y, point: outsideNow.label },
                         dpr,
                         final: { x: physicalX, y: physicalY },
@@ -4243,7 +4979,7 @@ body *:focus, body *:focus-visible {
                     });
                 }
                 catch (e) {
-                    log$7.warn('native outside-click failed, using JS fallback', e);
+                    log$8.warn('native outside-click failed, using JS fallback', e);
                 }
             }
             else {
@@ -4321,7 +5057,7 @@ body *:focus, body *:focus-visible {
      *    and clear it at the end of the current task (microtask if available).
      *    The lock release is critical — without it, subsequent presses get blocked.
      */
-    const log$6 = createLogger('Handlers');
+    const log$7 = createLogger('Handlers');
     // --- Constants -------------------------------------------------------------
     /** Discard rapid same-key repeats fired within this many milliseconds. */
     const RAPID_REPEAT_THRESHOLD_MS = 50;
@@ -4353,7 +5089,7 @@ body *:focus, body *:focus-visible {
         const myHandlerId = state.handlerId;
         const currentDomHandlerId = document.documentElement.getAttribute(HANDLER_ID_ATTR);
         if (String(myHandlerId) !== currentDomHandlerId) {
-            log$6.debug(`stale handler blocked: my=${myHandlerId} current=${currentDomHandlerId}`);
+            log$7.debug(`stale handler blocked: my=${myHandlerId} current=${currentDomHandlerId}`);
             return;
         }
         // 2. Atomic event lock — see file header.
@@ -4361,7 +5097,7 @@ body *:focus, body *:focus-visible {
         const eventLockKey = `${event.type || 'keydown'}:${event.key || ''}:${timeStamp.toFixed(3)}`;
         const currentLock = document.documentElement.getAttribute(EVENT_LOCK_ATTR);
         if (currentLock === eventLockKey) {
-            log$6.debug(`event lock hit: ${eventLockKey}`);
+            log$7.debug(`event lock hit: ${eventLockKey}`);
             return;
         }
         document.documentElement.setAttribute(EVENT_LOCK_ATTR, eventLockKey);
@@ -4391,12 +5127,12 @@ body *:focus, body *:focus-visible {
         const lastTime = window.__SPATIAL_NAV_LAST_KEY_TIME__ || 0;
         const lastKey = window.__SPATIAL_NAV_LAST_KEY__ || '';
         const timeSinceLast = debugNow - lastTime;
-        log$6.debug(`keydown #${callCount} key="${event.key}" handler=${myHandlerId} since=${timeSinceLast}ms`);
+        log$7.debug(`keydown #${callCount} key="${event.key}" handler=${myHandlerId} since=${timeSinceLast}ms`);
         window.__SPATIAL_NAV_LAST_KEY_TIME__ = debugNow;
         window.__SPATIAL_NAV_LAST_KEY__ = event.key;
         // 5. Drop rapid same-key repeats — likely synthetic-event duplicates.
         if (event.key === lastKey && timeSinceLast < RAPID_REPEAT_THRESHOLD_MS && timeSinceLast > 0) {
-            log$6.debug(`rapid repeat blocked: "${event.key}" within ${timeSinceLast}ms`);
+            log$7.debug(`rapid repeat blocked: "${event.key}" within ${timeSinceLast}ms`);
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
@@ -4404,6 +5140,9 @@ body *:focus, body *:focus-visible {
         }
         // 6. ENTER and SPACE — activate the focused element.
         if (event.key === 'Enter' || event.key === ' ') {
+            // Mark hardware-nav so the next real pointer event flips us back to
+            // touch (the modality watcher in `main.ts` reads this).
+            state.lastReportedModality = 'hardware-nav';
             handleActivationKey(event, state, myHandlerId);
             return;
         }
@@ -4411,7 +5150,10 @@ body *:focus, body *:focus-visible {
         const keyMap = directionByKey;
         if (!keyMap[event.key])
             return;
-        log$6.debug(`directional key: ${event.key}`);
+        // We're committed to handling a directional key; mark hardware-nav so the
+        // pointer watcher resumes transition reporting.
+        state.lastReportedModality = 'hardware-nav';
+        log$7.debug(`directional key: ${event.key}`);
         const now = Date.now();
         const lastRefresh = state.lastRefreshTime || 0;
         if (state.dirty || now - lastRefresh > REFRESH_THROTTLE_MS) {
@@ -4423,7 +5165,7 @@ body *:focus, body *:focus-visible {
             refreshFocusables(state);
             state.lastRefreshTime = Date.now();
             if (state.focusables.length === 0) {
-                log$6.debug('no focusable elements found');
+                log$7.debug('no focusable elements found');
                 // Block default to keep focus from escaping to the address bar.
                 event.preventDefault();
                 event.stopPropagation();
@@ -4432,46 +5174,53 @@ body *:focus, body *:focus-visible {
         }
         const validActive = ensureValidFocus(state);
         if (!validActive) {
-            log$6.warn('unable to recover focus — aborting navigation');
+            log$7.warn('unable to recover focus — aborting navigation');
             event.preventDefault();
             event.stopPropagation();
             return;
         }
         const currentActive = validActive;
         const currentIndex = currentActive ? state.focusableElements.indexOf(currentActive) : -1;
-        log$6.debug(`current focus: ${describeElement(currentActive)} (index=${currentIndex})`);
+        log$7.debug(`current focus: ${describeElement(currentActive)} (index=${currentIndex})`);
         const dirMap = directionByName;
         const targets = updatePreviewTargets(currentIndex, findDirectionalCandidate, dirMap, state);
-        log$6.debug('next targets', {
+        log$7.debug('next targets', {
             up: targets.up?.data ? describeElement(targets.up.data.element) : null,
             down: targets.down?.data ? describeElement(targets.down.data.element) : null,
             left: targets.left?.data ? describeElement(targets.left.data.element) : null,
             right: targets.right?.data ? describeElement(targets.right.data.element) : null,
         });
         const direction = keyMap[event.key];
-        log$6.debug(`moving direction: ${direction.name}`);
-        const moved = moveInDirection(direction, event, state);
+        log$7.debug(`moving direction: ${direction.name}`);
+        // First attempt — silent on boundary so we don't fire focusExit
+        // twice per user keypress. The retry below carries the boundary
+        // notification (sendFocusExit + spatialNavigationExit dispatch +
+        // overlay suppression) — see `MoveInDirectionOptions.notifyOnBoundary`
+        // for the analytics-cluster motivation.
+        const moved = moveInDirection(direction, event, state, { notifyOnBoundary: false });
         const afterActive = getActiveElement();
         if (!moved) {
-            log$6.debug('movement failed — retrying with forced refresh');
+            log$7.debug('movement failed — retrying with forced refresh');
             refreshFocusables(state);
             state.lastRefreshTime = Date.now();
-            const retryMoved = moveInDirection(direction, event, state);
+            // Retry attempt — this one DOES notify on boundary, so the
+            // single user keypress produces at most one focusExit.
+            const retryMoved = moveInDirection(direction, event, state, { notifyOnBoundary: true });
             if (!retryMoved) {
-                log$6.debug(`boundary reached: ${direction.name}`);
+                log$7.debug(`boundary reached: ${direction.name}`);
                 state.lastBoundary = direction.name;
                 event.preventDefault();
                 event.stopPropagation();
             }
             else {
-                log$6.debug('retry succeeded');
+                log$7.debug('retry succeeded');
                 const newActive = getActiveElement();
                 if (newActive)
                     scheduleOverlayUpdate(newActive, state);
             }
         }
         else {
-            log$6.debug(`new focus: ${describeElement(afterActive)}`);
+            log$7.debug(`new focus: ${describeElement(afterActive)}`);
             if (afterActive)
                 scheduleOverlayUpdate(afterActive, state);
         }
@@ -4495,7 +5244,7 @@ body *:focus, body *:focus-visible {
         const role = safeGetAttr(activeElement, 'role');
         const ariaHasPopup = safeGetAttr(activeElement, 'aria-haspopup');
         const ariaExpanded = safeGetAttr(activeElement, 'aria-expanded');
-        log$6.debug(`${event.key === ' ' ? 'SPACE' : 'ENTER'} on ${describeElement(activeElement)}`, {
+        log$7.debug(`${event.key === ' ' ? 'SPACE' : 'ENTER'} on ${describeElement(activeElement)}`, {
             tagName,
             role,
             hasHref: !!href,
@@ -4540,7 +5289,7 @@ body *:focus, body *:focus-visible {
                 return;
         }
         const useNativeClick = canRequestNativeClick && wantsNativeClick;
-        log$6.debug(`click strategy: ${useNativeClick ? 'NATIVE' : 'JS .click()'}`, {
+        log$7.debug(`click strategy: ${useNativeClick ? 'NATIVE' : 'JS .click()'}`, {
             actionTag,
             actionRole,
             isMenuToggle,
@@ -4554,7 +5303,7 @@ body *:focus, body *:focus-visible {
         const picked = pickClickPoint(clickTarget);
         const x = picked.x;
         const y = picked.y;
-        log$6.debug('hit-test', {
+        log$7.debug('hit-test', {
             action: describeElement(actionElement),
             clickTarget: describeElement(clickTarget),
             actionCenter: { x: actionCenter.x, y: actionCenter.y, hit: describeElement(initialHit) },
@@ -4573,12 +5322,12 @@ body *:focus, body *:focus-visible {
             dispatchHoverPrime(clickTarget, commonOptions);
             if (typeof htmlElement.focus === 'function')
                 htmlElement.focus();
-            log$6.debug('requesting native MotionEvent injection');
+            log$7.debug('requesting native MotionEvent injection');
             // Convert CSS px → physical px for Android MotionEvent.
             const dpr = window.devicePixelRatio || 1.0;
             const finalX = x * dpr;
             const finalY = y * dpr;
-            log$6.debug('native injection request', {
+            log$7.debug('native injection request', {
                 css: { x, y, point: picked.label },
                 dpr,
                 final: { x: finalX, y: finalY },
@@ -4599,10 +5348,10 @@ body *:focus, body *:focus-visible {
                     if (result && typeof result.then === 'function') {
                         result
                             .then((response) => {
-                            log$6.debug('background relay success (promise)', response);
+                            log$7.debug('background relay success (promise)', response);
                         })
                             .catch((error) => {
-                            log$6.error('background relay failed (promise)', error);
+                            log$7.error('background relay failed (promise)', error);
                         });
                     }
                 }
@@ -4611,16 +5360,16 @@ body *:focus, body *:focus-visible {
                     sendMessage(message, (response) => {
                         const error = runtimeApi.lastError;
                         if (error) {
-                            log$6.error('background relay failed (lastError)', error);
+                            log$7.error('background relay failed (lastError)', error);
                         }
                         else {
-                            log$6.debug('background relay success (callback)', response);
+                            log$7.debug('background relay success (callback)', response);
                         }
                     });
                 }
             }
             catch (e) {
-                log$6.warn('native injection unavailable, falling back to JS .click()', e);
+                log$7.warn('native injection unavailable, falling back to JS .click()', e);
                 try {
                     if (typeof clickTarget.click === 'function') {
                         clickTarget.click();
@@ -4724,13 +5473,17 @@ body *:focus, body *:focus-visible {
     // =============================================================================
     /**
      * Attach a scroll listener (capture phase) that updates the overlay when the
-     * focused element's viewport position changes. Uses rAF + per-element scroll
-     * cache to coalesce updates and skip jitter from smooth-scrolling.
+     * focused element's viewport position changes. Uses rAF debouncing to
+     * coalesce multiple scroll events into one position update per frame.
+     *
+     * Exported for testing — pin the per-rAF-tick update contract so a
+     * future refactor can't reintroduce the "scrollThreshold filter
+     * blocks smooth-scroll tracking" regression.
      */
     function attachScrollListener(state) {
         const config = state.config;
         if (config.observeScroll === false) {
-            log$6.debug('scroll listener disabled by config');
+            log$7.debug('scroll listener disabled by config');
             return;
         }
         const scrollPositions = new WeakMap();
@@ -4745,7 +5498,14 @@ body *:focus, body *:focus-visible {
                     return;
                 }
                 const target = rawTarget === document ? window : rawTarget;
-                const threshold = config.scrollThreshold || 8;
+                // `config.scrollThreshold` is retained for back-compat
+                // with consumers that set it, but the post-rAF
+                // listener architecture no longer needs a px filter —
+                // the rAF debounce above already caps the update rate
+                // at one per frame, and gating per-frame deltas (which
+                // for smooth-scroll are ~1–15 px) caused the
+                // "ring stuck while page scrolls" artifact (see fire
+                // logic below). The knob is effectively a no-op now.
                 let currentScrollY;
                 let currentScrollX;
                 if (target === window) {
@@ -4766,8 +5526,32 @@ body *:focus, body *:focus-visible {
                 };
                 const deltaY = Math.abs(currentScrollY - cached.scrollY);
                 const deltaX = Math.abs(currentScrollX - cached.scrollX);
-                // Only update if scroll moved past threshold (prevents smooth-scroll jitter).
-                if (deltaY > threshold || deltaX > threshold) {
+                scrollPositions.set(target, {
+                    scrollY: currentScrollY,
+                    scrollX: currentScrollX,
+                });
+                // Fire on ANY frame-over-frame scroll movement (>= 1 px).
+                //
+                // The earlier `config.scrollThreshold || 8` filter was
+                // intended to avoid micro-jitter, but in practice it
+                // filtered out the meaningful per-tick deltas of a
+                // `behavior:'smooth'` scrollBy — those typically move
+                // 4–15 px per frame over ~300 ms. The listener fired
+                // exactly once (at the boundary itself) and the focus
+                // ring sat at its pre-scroll viewport coords until the
+                // smooth scroll finished, producing the user-reported
+                // "ring slides off and returns to settle" artifact. The
+                // rAF debounce above already caps the update rate at
+                // one per frame, so removing the px filter doesn't
+                // increase the worst-case overhead — it just keeps the
+                // ring honest during smooth-scroll animations.
+                //
+                // Kept the `cached`/`deltaY`/`deltaX` plumbing because
+                // a 0-px scroll event means nothing meaningful changed
+                // (e.g., the page emits a stub scroll event right after
+                // an instant scrollIntoView that already landed); skip
+                // those.
+                if (deltaY > 0 || deltaX > 0) {
                     const active = getActiveElement();
                     if (active && state.currentIndex !== -1) {
                         const currentEntry = state.focusables[state.currentIndex];
@@ -4780,13 +5564,17 @@ body *:focus, body *:focus-visible {
                             currentEntry.centerX = rect.left + rect.width / 2;
                             currentEntry.centerY = rect.top + rect.height / 2;
                             currentEntry.rect = rect;
+                            // [diag] Scroll tick → overlay update path.
+                            // log.debug: fires on every requestAnimationFrame
+                            // scroll batch, so log.info would flood debug
+                            // bundles. Production strips this entirely.
+                            log$7.debug(`scroll listener: update dY=${deltaY} dX=${deltaX} rectT=${rect.top.toFixed(1)} VPh=${window.innerHeight} suppressed=${state.overlaySuppressed} active=${active.tagName.toLowerCase()}${active.id ? '#' + active.id : ''}`);
                             scheduleOverlayUpdate(active, state);
                         }
                     }
-                    scrollPositions.set(target, {
-                        scrollY: currentScrollY,
-                        scrollX: currentScrollX,
-                    });
+                    else {
+                        log$7.debug(`scroll listener: NO active focusable hasActive=${!!active} currentIndex=${state.currentIndex}`);
+                    }
                 }
                 scrollTimer = null;
             });
@@ -4820,7 +5608,7 @@ body *:focus, body *:focus-visible {
         // inits still get distinct IDs.
         const handlerId = (Date.now() % 100000) * 1000 + newCounter * 100 + Math.floor(Math.random() * 100);
         if (state.handlersAttached) {
-            log$6.debug('state already has handlers, skipping');
+            log$7.debug('state already has handlers, skipping');
             return;
         }
         document.documentElement.setAttribute(HANDLER_ID_ATTR, String(handlerId));
@@ -4853,7 +5641,7 @@ body *:focus, body *:focus-visible {
      * Handles DOM mutation detection with buffered architecture and conditional refresh.
      * Features framework-aware refresh scheduling for React/Vue/Angular.
      */
-    const log$5 = createLogger('Observer');
+    const log$6 = createLogger('Observer');
     /** Mutation attributes worth observing — narrow filter improves perf on busy SPAs. */
     const RELEVANT_ATTRIBUTES = [
         'style',
@@ -4955,7 +5743,7 @@ body *:focus, body *:focus-visible {
         for (const [, adapter] of Object.entries(frameworkAdapters)) {
             try {
                 if (adapter.detect()) {
-                    log$5.debug(`detected framework: ${adapter.name}`);
+                    log$6.debug(`detected framework: ${adapter.name}`);
                     state.detectedFramework = adapter;
                     return adapter;
                 }
@@ -5006,26 +5794,65 @@ body *:focus, body *:focus-visible {
             // CRITICAL: Store position hint BEFORE any refresh to enable geometric recovery
             // This prevents "popping to top" when virtual scroll recycles the focused element
             storePositionHint(state);
-            // Check if we need full refresh (DOM structure changed)
-            const needsFullRefresh = mutationBuffer.some((m) => m.type === 'childList');
+            // Force a full refresh whenever the DOM tree changes OR a visibility-
+            // affecting attribute (aria-hidden / hidden) flips. The incremental
+            // path inspects only the mutation target, but aria-hidden/hidden on a
+            // wrapper transitively excludes/restores every focusable inside —
+            // refreshFocusables uses `closest('[aria-hidden="true"]')` and the
+            // computed-style display check, both of which see ancestors. Without
+            // this, toggling a tab panel's wrapper leaves stale focusables until
+            // the next childList mutation.
+            const needsFullRefresh = mutationBuffer.some((m) => {
+                if (m.type === 'childList')
+                    return true;
+                if (m.type === 'attributes') {
+                    return m.attributeName === 'aria-hidden' || m.attributeName === 'hidden';
+                }
+                return false;
+            });
             // Invalidate precomputed cache
             state.dirty = true;
             state.precomputedTargets = null;
             const doRefresh = () => {
                 if (needsFullRefresh) {
-                    log$5.debug('childList mutation → full refresh');
+                    log$6.debug('childList mutation → full refresh');
                     refreshFocusables(state);
                 }
                 else {
-                    log$5.debug('attribute mutation → incremental update');
+                    log$6.debug('attribute mutation → incremental update');
                     refreshAttributes(state, mutationBuffer);
                 }
                 const active = getActiveElement();
-                if (active && state.focusableElements && state.focusableElements.includes(active)) {
+                // Earlier versions hid the overlay whenever `state.focusableElements`
+                // didn't include the active element. That over-fires:
+                //   - React/Vue/etc. re-mount focused elements with new node
+                //     identity during render — same logical focus, different
+                //     node reference; the new node hadn't yet been picked up
+                //     by `refreshFocusables` at this point in the mutation.
+                //   - Scroll-driven lazy-loads on rich pages (e.g. dart.art's
+                //     hero animations) fire frequent childList mutations
+                //     that trigger a full refresh; transient races between
+                //     the refresh and the host's still-attached focus
+                //     element caused the user-reported "focus ring vanishes
+                //     after viewport shift" bug.
+                //
+                // Only hide if the active element is genuinely no longer a
+                // valid focus target — disconnected from the DOM or fallen
+                // back to body / documentElement. Otherwise reposition.
+                const isValidFocus = !!active &&
+                    active instanceof HTMLElement &&
+                    active.isConnected &&
+                    active !== document.body &&
+                    active !== document.documentElement;
+                if (isValidFocus) {
                     scheduleOverlayUpdate(active, state);
                 }
                 else if (state.overlay) {
-                    log$5.debug('current focus invalidated by mutation, hiding overlay');
+                    log$6.debug('current focus invalidated by mutation, hiding overlay', {
+                        hasActive: !!active,
+                        isConnected: active?.isConnected,
+                        isBody: active === document.body,
+                    });
                     hideOverlay(state);
                 }
             };
@@ -5045,7 +5872,7 @@ body *:focus, body *:focus-visible {
             return;
         const config = state.config;
         if (config.observeMutations === false) {
-            log$5.debug('mutation observer disabled by config');
+            log$6.debug('mutation observer disabled by config');
             return;
         }
         const observer = new MutationObserver((mutations) => {
@@ -5070,7 +5897,7 @@ body *:focus, body *:focus-visible {
             attributeFilter: RELEVANT_ATTRIBUTES,
         });
         state.mutationObserver = observer;
-        log$5.debug('mutation observer attached');
+        log$6.debug('mutation observer attached');
     }
 
     /**
@@ -5086,13 +5913,13 @@ body *:focus, body *:focus-visible {
      *   - v3.x — legacy aliases work, log a warning on first access
      *   - v4.0 — legacy aliases removed
      */
-    const log$4 = createLogger('Deprecation');
+    const log$5 = createLogger('Deprecation');
     const warnedKeys = new Set();
     function warnOnce(name, replacement) {
         if (warnedKeys.has(name))
             return;
         warnedKeys.add(name);
-        log$4.warn(`\`window.${name}\` is deprecated and will be removed in v4. ` +
+        log$5.warn(`\`window.${name}\` is deprecated and will be removed in v4. ` +
             `Use \`window.${replacement}\` instead.`);
     }
     /**
@@ -5101,17 +5928,18 @@ body *:focus, body *:focus-visible {
      * embedded browsers do not allow it on `window`).
      */
     function defineLegacyAlias(name, replacement, value) {
+        let currentValue = value;
         try {
             Object.defineProperty(window, name, {
                 configurable: true,
                 enumerable: true,
                 get: () => {
                     warnOnce(name, replacement);
-                    return value;
+                    return currentValue;
                 },
                 set: (v) => {
                     warnOnce(name, replacement);
-                    window[`__${name}_value`] = v;
+                    currentValue = v;
                 },
             });
         }
@@ -5271,7 +6099,7 @@ body *:focus, body *:focus-visible {
      * - WKWebView (webkit.messageHandlers)
      * - Android WebView (JavascriptInterface)
      */
-    const log$3 = createLogger('Messaging');
+    const log$4 = createLogger('Messaging');
     /**
      * Base class with common functionality for messaging adapters.
      */
@@ -5302,7 +6130,7 @@ body *:focus, body *:focus-visible {
                     callback(message);
                 }
                 catch (error) {
-                    log$3.error('callback error', error);
+                    log$4.error('callback error', error);
                 }
             }
             this.eventHandlers.onMessage?.(message);
@@ -5348,7 +6176,7 @@ body *:focus, body *:focus-visible {
      *
      * @see https://firefox-source-docs.mozilla.org/mobile/android/geckoview/consumer/web-extensions.html
      */
-    const log$2 = createLogger('Messaging');
+    const log$3 = createLogger('Messaging');
     /**
      * Safe accessor for the WebExtension `browser` global. In standalone/test
      * environments the global may be entirely absent — `typeof` guards against
@@ -5415,12 +6243,12 @@ body *:focus, body *:focus-visible {
                     this.setState('connected');
                     this.reconnectAttempts = 0;
                     this.flushQueue();
-                    log$2.debug('connected to background script');
+                    log$3.debug('connected to background script');
                 }
                 else {
                     // No persistent connection — `sendNativeMessage` only.
                     this.setState('connected');
-                    log$2.debug('using sendNativeMessage mode (no persistent connection)');
+                    log$3.debug('using sendNativeMessage mode (no persistent connection)');
                 }
             }
             catch (error) {
@@ -5437,7 +6265,7 @@ body *:focus, body *:focus-visible {
             this.messageQueue = [];
             this.reconnectAttempts = 0;
             this.setState('disconnected');
-            log$2.debug('disconnected');
+            log$3.debug('disconnected');
         }
         send(message) {
             const fullMessage = {
@@ -5451,18 +6279,32 @@ body *:focus, body *:focus-visible {
                     return true;
                 }
                 catch (error) {
-                    log$2.warn('port send failed, falling back', error);
+                    log$3.warn('port send failed, falling back', error);
                     this.port = null;
                 }
             }
             // Fallback to sendNativeMessage with the hardcoded app id.
+            //
+            // `sendNativeMessage` is promise-returning in WebExtensions, so a
+            // synchronous try/catch only catches launch-path errors (e.g. the
+            // function is missing). The async failure case (native host not
+            // installed, runtime rejects the message) lands as a promise
+            // rejection — we attach `.catch` so the message gets queued for
+            // retry and we never leak an unhandled-rejection warning.
             const b = getBrowser();
             if (b?.runtime?.sendNativeMessage) {
                 try {
-                    b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
+                    const result = b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
+                    if (result && typeof result.then === 'function') {
+                        result.catch((err) => {
+                            log$3.warn('sendNativeMessage rejected, requeueing', err);
+                            this.queueMessage(fullMessage);
+                        });
+                    }
                     return true;
                 }
-                catch {
+                catch (err) {
+                    log$3.warn('sendNativeMessage threw, requeueing', err);
                     this.queueMessage(fullMessage);
                     return false;
                 }
@@ -5472,26 +6314,26 @@ body *:focus, body *:focus-visible {
             return false;
         }
         handleMessage(message) {
-            log$2.debug('message received', message?.type);
+            log$3.debug('message received', message?.type);
             this.dispatchMessage(message);
         }
         handleDisconnect() {
-            log$2.debug('port disconnected');
+            log$3.debug('port disconnected');
             this.port = null;
             this.setState('disconnected');
             if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-                log$2.warn(`max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached — giving up`);
+                log$3.warn(`max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached — giving up`);
                 return;
             }
             this.reconnectAttempts++;
             // Exponential backoff capped at MAX_RECONNECT_DELAY_MS.
             const exponentialDelay = INITIAL_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1);
             const cappedDelay = Math.min(exponentialDelay, MAX_RECONNECT_DELAY_MS);
-            log$2.debug(`reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${cappedDelay}ms`);
+            log$3.debug(`reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${cappedDelay}ms`);
             this.reconnectTimer = setTimeout(() => {
                 this.reconnectTimer = null;
                 this.connect().catch((error) => {
-                    log$2.warn('reconnect failed', error);
+                    log$3.warn('reconnect failed', error);
                 });
             }, cappedDelay);
         }
@@ -5499,7 +6341,7 @@ body *:focus, body *:focus-visible {
             this.messageQueue.push(message);
             if (this.messageQueue.length > MAX_QUEUE_SIZE) {
                 const dropped = this.messageQueue.shift();
-                log$2.debug('queue full, dropped oldest message', dropped?.type);
+                log$3.debug('queue full, dropped oldest message', dropped?.type);
             }
         }
         flushQueue() {
@@ -5523,7 +6365,7 @@ body *:focus, body *:focus-visible {
      * - Testing/development environments
      * - Graceful degradation when native messaging unavailable
      */
-    const log$1 = createLogger('Messaging');
+    const log$2 = createLogger('Messaging');
     /**
      * No-op messaging adapter that silently accepts all messages.
      */
@@ -5541,21 +6383,136 @@ body *:focus, body *:focus-visible {
         async connect() {
             this.setState('connected');
             if (this._verbose) {
-                log$1.info('noop adapter connected (no-op mode)');
+                log$2.info('noop adapter connected (no-op mode)');
             }
         }
         disconnect() {
             this.setState('disconnected');
             if (this._verbose) {
-                log$1.info('noop adapter disconnected');
+                log$2.info('noop adapter disconnected');
             }
         }
         send(message) {
             if (this._verbose) {
-                log$1.debug('noop adapter message dropped', message.type);
+                log$2.debug('noop adapter message dropped', message.type);
             }
             return true;
         }
+    }
+
+    /**
+     * Input modality watcher — pointer/touch detection.
+     *
+     * Owned by the extension as of v3.1. Listens for real
+     * `pointerdown` / `touchstart` events on `document` (capture phase, passive)
+     * and reports `inputModalityChange: touch` to the native host whenever the
+     * extension's locally-tracked `state.lastReportedModality` is currently
+     * `hardware-nav` — i.e. when the user has been using the D-pad or arrow keys
+     * and now switches back to touch.
+     *
+     * Filter: `event.isTrusted === false` returns early so synthetic events
+     * dispatched by `dispatchFullPointerSequence` in `navigation/handlers.ts`
+     * (the Enter/Space → simulated-click sequence) don't flip modality back to
+     * touch every time the user activates an element with the D-pad. The browser
+     * engine sets `isTrusted` itself; page JS cannot spoof it from a content
+     * script's vantage.
+     *
+     * Back-compat: in addition to the proper `inputModalityChange` outbound
+     * message, the watcher writes the legacy `flutter-modality-control:touch`
+     * title-channel postback so wrappers older than the plugin-side handler can
+     * still consume the signal. The title is restored on the next tick. Slated
+     * for removal one extension release after all consuming apps have a Dart
+     * handler for `inputModalityChange`.
+     */
+    const log$1 = createLogger('Main');
+    /**
+     * Title-prefix used to postback modality changes via `document.title`.
+     *
+     * Keep in lockstep with `_controlTitlePrefix` in
+     * `flutter-geckoview-apps/packages/browse_core/lib/src/focus/focus_style_manager.dart`.
+     */
+    const MODALITY_TITLE_PREFIX = 'flutter-modality-control:';
+    /**
+     * Default postback implementation: emits via `postToNative` AND writes the
+     * back-compat title channel. `main.ts` builds this around its module-scoped
+     * messaging adapter.
+     */
+    function buildDefaultModalityPostback(postToNative, documentRef = typeof document !== 'undefined' ? document : undefined) {
+        return (modality) => {
+            postToNative({ type: 'inputModalityChange', modality });
+            if (!documentRef)
+                return;
+            try {
+                const prev = documentRef.title;
+                documentRef.title = `${MODALITY_TITLE_PREFIX}${modality}`;
+                setTimeout(() => {
+                    try {
+                        documentRef.title = prev;
+                    }
+                    catch {
+                        // ignore title-write failures on detached docs
+                    }
+                }, 0);
+            }
+            catch {
+                // Title write blocked (e.g., sandboxed iframe).
+            }
+        };
+    }
+    /**
+     * Install the `pointerdown` / `touchstart` watcher on `document`.
+     *
+     * Idempotent: subsequent calls against the same document are no-ops (guarded
+     * by `window.__spatnavModalityWatcherAttached`). Callers re-clear the marker
+     * before re-invocation when a BFCache restore swaps the document.
+     *
+     * @returns `true` if the watcher was newly attached, `false` if a prior
+     *   install was detected (no-op).
+     */
+    function setupInputModalityWatcher$1(state, postback, options = {}) {
+        const win = (options.windowRef ?? (typeof window !== 'undefined' ? window : undefined));
+        const doc = options.documentRef ?? (typeof document !== 'undefined' ? document : undefined);
+        if (!doc || !win)
+            return false;
+        if (win.__spatnavModalityWatcherAttached === true)
+            return false;
+        win.__spatnavModalityWatcherAttached = true;
+        const handlePointer = (e) => {
+            // Synthetic events from `dispatchEvent` are stamped `isTrusted:
+            // false` by the engine — including the click-activation sequence in
+            // `handlers.ts:dispatchFullPointerSequence`. Page JS cannot spoof
+            // this from a content-script's vantage. We deliberately do NOT
+            // rewrite the synthetic events' `pointerType` because page-side
+            // tap handlers inspect it to recognise a touch activation.
+            if (e.isTrusted === false)
+                return;
+            if (state.lastReportedModality === 'touch')
+                return;
+            state.lastReportedModality = 'touch';
+            // Belt-and-braces: hide ring + preview chevrons directly via the
+            // extension's own DOM manipulation. The wrapper-side shadow-DOM
+            // `:host { opacity: 0 }` gate normally handles this — but the
+            // wrapper's runJavaScript is async (queued on the platform
+            // channel) and there's a window where:
+            //   - YouTube / similar SPA fires a `pageshow` or re-init event
+            //   - Extension calls `ensureOverlay` → removes old host, creates
+            //     fresh host (no wrapper marker style, no `data-modality`)
+            //   - User touches before the wrapper's next `_writeHostAttributes`
+            //     lands
+            // During that race, the extension's `showOverlay(null)` path
+            // removes the ring's `.visible` class (ring hides via extension
+            // CSS) but the chevrons keep their `.show` class — visible. The
+            // synchronous hide here closes that gap regardless of wrapper
+            // timing. Idempotent: both helpers no-op when their targets are
+            // already hidden.
+            hideOverlay(state);
+            hidePreviewElements(state);
+            postback('touch');
+        };
+        doc.addEventListener('pointerdown', handlePointer, { passive: true, capture: true });
+        doc.addEventListener('touchstart', handlePointer, { passive: true, capture: true });
+        log$1.debug('input modality watcher installed');
+        return true;
     }
 
     /**
@@ -5580,7 +6537,7 @@ body *:focus, body *:focus-visible {
     const log = createLogger('Main');
     const STYLE_ID = 'spatnav-focus-styles';
     const OVERLAY_HOST_ID = 'spatnav-focus-host';
-    const VERSION = '3.0.1';
+    const VERSION = '3.1.0';
     // Debounce window for the pageshow re-init handler. Below this threshold we
     // treat consecutive events as the same logical navigation.
     const PAGESHOW_DEBOUNCE_MS = 100;
@@ -5643,6 +6600,16 @@ body *:focus, body *:focus-visible {
      */
     function postToNative(message) {
         return messagingAdapter?.send(message) ?? false;
+    }
+    /**
+     * Install the in-page pointer/touch watcher around the active messaging
+     * adapter. Delegates to `core/modality_watcher.ts` so the watcher's
+     * filtering + back-compat title-channel logic is testable in isolation.
+     */
+    function setupInputModalityWatcher(state) {
+        setupInputModalityWatcher$1(state, buildDefaultModalityPostback((msg) => {
+            postToNative(msg);
+        }));
     }
     /**
      * Install WICG-compatible APIs on global objects.
@@ -5739,6 +6706,11 @@ body *:focus, body *:focus-visible {
             return;
         }
         log.debug('pageshow: re-initializing', { needsStyles, needsOverlay });
+        // Re-stamp the handler-id on the new documentElement. The window-level
+        // keydown listener captured the original handlerId in closure and short-
+        // circuits when the DOM attribute disagrees — without this restamp the
+        // listener would silently drop every keystroke after a document swap.
+        document.documentElement.setAttribute(HANDLER_ID_ATTR, String(state.handlerId));
         if (needsOverlay) {
             state.overlayHost = null;
             state.overlay = null;
@@ -5761,6 +6733,12 @@ body *:focus, body *:focus-visible {
         attachVirtualScrollSentinels(state);
         refreshFocusables(state);
         showOverlay(null, state);
+        // BFCache restore swaps the document — `document.addEventListener`
+        // listeners attached to the old document are gone. Clear the install
+        // marker so `setupInputModalityWatcher` re-attaches against the fresh
+        // document.
+        window.__spatnavModalityWatcherAttached = false;
+        setupInputModalityWatcher(state);
     }
     /**
      * Run the full initialization pipeline.
@@ -5854,6 +6832,16 @@ body *:focus, body *:focus-visible {
         state.initialized = true;
         log.info('initialization complete');
         const suppressOverlay = (reason) => {
+            // [diag] Every set of `overlaySuppressed=true` happens here OR
+            // in movement.ts's default-exit branch. If the user-reported
+            // "ring vanishes after viewport shift" log trail crosses this
+            // function, the boundary-exit fall-through fired (no scroll
+            // room, or boundaryScrollBehavior !== 'scroll').
+            // Promoted to log.warn (from log.info) so the prod bundle keeps
+            // this diagnostic — it`s the smoking-gun signal for "ring vanished
+            // / HUD reads suppressed" investigations, but the prod bundle
+            // strips console.log/info/debug.
+            log.warn(`suppressOverlay(reason=${reason}) scrollY=${window.scrollY} active=${document.activeElement?.tagName?.toLowerCase() ?? '(null)'}`);
             state.overlaySuppressed = true;
             if (state.updateTimer) {
                 cancelAnimationFrame(state.updateTimer);
@@ -5862,16 +6850,191 @@ body *:focus, body *:focus-visible {
             hideOverlay(state);
             hidePreviewElements(state);
             log.debug(`overlay suppressed (${reason})`);
+            // Cancel any pending recovery — the new suppression supersedes.
+            if (state.suppressRecoveryTimer != null) {
+                clearTimeout(state.suppressRecoveryTimer);
+                state.suppressRecoveryTimer = null;
+            }
+            // Auto-recover for `spatialNavigationExit` only. The other two
+            // sources (`window.blur`, `document.hidden`) reflect a genuine
+            // exit from the document and should remain suppressed until the
+            // host explicitly re-shows or the page becomes visible again.
+            //
+            // `spatialNavigationExit` fires on internal boundary attempts
+            // (no target in DOM in this direction). The user's focus is
+            // still on the element they were trying to navigate from — and
+            // crucially, the wrapper may have scrolled the page in response
+            // to expose more content. After the scroll settles, if focus
+            // is still on a real focusable element, the overlay should
+            // re-appear: the user is still in the document, not in native
+            // UI.
+            if (reason !== 'spatialNavigationExit')
+                return;
+            state.suppressRecoveryTimer = setTimeout(() => {
+                state.suppressRecoveryTimer = null;
+                // Someone else already cleared suppression (e.g., a
+                // subsequent moveInDirection succeeded). Nothing to do.
+                if (!state.overlaySuppressed)
+                    return;
+                const active = document.activeElement;
+                // Body / documentElement / null means focus is no longer on
+                // a real focusable — focus genuinely left to native UI
+                // (e.g., browser chrome). Keep suppressed.
+                if (!active || active === document.body || active === document.documentElement) {
+                    return;
+                }
+                if (!(active instanceof HTMLElement))
+                    return;
+                state.overlaySuppressed = false;
+                // [diag] Auto-recover from spatialNavigationExit: 350ms
+                // after the suppression, re-show the ring on the active
+                // element if it's still a real focusable.
+                log.info('suppressOverlay auto-recover firing', {
+                    activeTag: active.tagName.toLowerCase(),
+                });
+                showOverlay(active, state);
+                log.debug('overlay auto-recovered after spatialNavigationExit settle');
+            }, 350);
         };
-        // 16. Hide overlay when focus leaves the document (e.g., returning to address bar)
+        // 16. Install the input-modality watcher (`pointerdown` + `touchstart`).
+        //     Reports touch transitions to the native host so consumer wrappers
+        //     can hide their focus ring. The wrapper's previous
+        //     `runJavaScript`-based install is now redundant.
+        setupInputModalityWatcher(state);
+        // 17. Hide overlay when focus leaves the document (e.g., returning to address bar)
         window.addEventListener('blur', () => suppressOverlay('window.blur'));
         document.addEventListener('visibilitychange', () => {
             if (document.hidden)
                 suppressOverlay('document.hidden');
         });
-        // Hide overlay when spatial navigation exits to native UI
+        // Hide overlay when spatial navigation exits to native UI. Auto-recovers
+        // 350ms later if focus is still on a real focusable element — the
+        // boundary case where the user pressed a directional key, no target
+        // was found, the wrapper scrolled the page, and focus stayed on the
+        // previously-focused element.
         document.addEventListener('spatialNavigationExit', () => suppressOverlay('spatialNavigationExit'));
-        // 17. Re-initialize on page navigation
+        // Cross-world bridge for the wrapper's `engage-on-transition` hook.
+        //
+        // The WebExtension content script runs in an isolated JS world —
+        // the host's `runJavaScript` (page main world) can't read
+        // `window.spatialNavState` or call `window.showSpatialNavOverlay`.
+        // They share the same `document`, though, so a CustomEvent fired
+        // from the host on `document` IS received here.
+        //
+        // The host fires this on a touch → hardwareNav transition when the
+        // first-press-swallow flag is armed. Without it, the first press
+        // from a state where the WebView has no DOM-focused element (cold
+        // boot / fresh page / address-bar → WebView focus traversal) flips
+        // modality + sets data-ring=visible but the actual
+        // #spatnav-focus-overlay element stays display:none. The user
+        // would see no ring on the first press and would need to press
+        // again to trigger a key dispatch + recovery.
+        //
+        // Semantics:
+        //   - If a real focusable is already DOM-focused: show the ring on
+        //     it (preserves "tap a link, press Down, see ring on tapped
+        //     element" UX).
+        //   - Otherwise: focus the FIRST focusable. The window-level
+        //     `focus` capture-listener in `attachHandlers` picks up the
+        //     event and triggers `scheduleOverlayUpdate` → `showOverlay`,
+        //     putting the ring on the first element.
+        // `spatnav-clear-suppress` — lightweight bridge fired by the host on
+        // EVERY `notifyHardwareNavActivity` (touch → hardwareNav AND
+        // hardwareNav → hardwareNav). Just clears stale `overlaySuppressed`
+        // without trampling focus. Needed because `engage-overlay` only fires
+        // on the touch → hardwareNav transition (to avoid refocusing the
+        // first focusable when the user is mid-navigation), but a prior
+        // `window.blur` (host address bar got focus) sets `suppressed = true`
+        // and never auto-recovers. If the user comes back to the WebView via
+        // D-pad while modality was already hardwareNav, engage doesn`t fire,
+        // suppress stays true, the HUD shows "suppressed", and the next
+        // `scheduleOverlayUpdate` is silently early-returned.
+        document.addEventListener('spatnav-clear-suppress', () => {
+            if (state.overlaySuppressed) {
+                // log.warn (preserved in prod) — the load-bearing transition
+                // when the user returns to the WebView after a `window.blur`
+                // (Flutter focus left the WebView temporarily).
+                log.warn('spatnav-clear-suppress: clearing stale overlaySuppressed');
+                clearOverlaySuppression(state);
+            }
+            // Re-paint the overlay AND directional chevrons on the current
+            // focused focusable, if any. Without this, the `wasTouch=false`
+            // path of `notifyHardwareNavActivity` (e.g., user returns to
+            // WebView while modality was already hardwareNav) writes
+            // `data-ring=visible` on the host but the inner
+            // `#spatnav-focus-overlay` stays at `opacity: 0` (no `.visible`
+            // class) — host visible, ring invisible. Also: chevron previews
+            // are rendered via `updatePreviewVisuals` from the focus
+            // capture-listener`s scheduleOverlayUpdate path, which is gated
+            // on `state.overlaySuppressed` and silently early-returns when
+            // suppress was true at the time of the focus event. After we
+            // clear suppress here, we must explicitly call
+            // `updatePreviewVisuals` ourselves — otherwise the ring renders
+            // but the up/down/left/right chevrons stay invisible (matches
+            // the user-reported "DART logo focus ring doesn`t have any
+            // arrows" after UP-then-DOWN sequence).
+            try {
+                const active = document.activeElement;
+                if (active &&
+                    active !== document.body &&
+                    active !== document.documentElement &&
+                    active instanceof HTMLElement) {
+                    const list = state.focusableElements;
+                    if (Array.isArray(list) && list.indexOf(active) !== -1) {
+                        showOverlay(active, state);
+                        updatePreviewVisuals(active, null, findDirectionalCandidate, directionByName, describeElement, state);
+                    }
+                }
+            }
+            catch (e) {
+                log.warn('spatnav-clear-suppress re-paint error', e);
+            }
+        });
+        document.addEventListener('spatnav-engage-overlay', () => {
+            try {
+                if (state.overlaySuppressed) {
+                    // log.warn (preserved in prod) — load-bearing recovery from
+                    // a stale window.blur/document.hidden suppression.
+                    log.warn('engage-overlay: clearing stale overlaySuppressed');
+                    clearOverlaySuppression(state);
+                }
+                const active = document.activeElement;
+                const focusables = state.focusableElements;
+                if (!Array.isArray(focusables) || focusables.length === 0) {
+                    refreshFocusables(state);
+                }
+                const list = state.focusableElements;
+                if (!Array.isArray(list) || list.length === 0) {
+                    log.debug('engage-overlay: no focusables to engage');
+                    return;
+                }
+                const activeIsFocusable = !!active &&
+                    active !== document.body &&
+                    active !== document.documentElement &&
+                    list.indexOf(active) !== -1;
+                if (activeIsFocusable) {
+                    log.info(`engage-overlay: show on active ${describeElement(active)}`);
+                    showOverlay(active, state);
+                    // Mirror `spatnav-clear-suppress`: render the chevrons
+                    // for the current focusable. The `focusInitialElement`
+                    // path below relies on the focus event firing
+                    // `scheduleOverlayUpdate`, which calls
+                    // `updatePreviewVisuals` itself — but the direct
+                    // `showOverlay(active)` path above (activeIsFocusable)
+                    // does NOT, so the chevrons would be missing for
+                    // exactly the same reason as the clear-suppress race.
+                    updatePreviewVisuals(active, null, findDirectionalCandidate, directionByName, describeElement, state);
+                }
+                else {
+                    log.info('engage-overlay: focus first focusable');
+                    focusInitialElement(true, state);
+                }
+            }
+            catch (e) {
+                log.warn('engage-overlay handler error', e);
+            }
+        });
+        // 18. Re-initialize on page navigation
         let lastPageshowTime = 0;
         window.addEventListener('pageshow', () => {
             const now = Date.now();

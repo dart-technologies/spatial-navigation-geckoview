@@ -21,16 +21,21 @@
 
 /**
  * Build-time debug flag.
- * Replaced by Rollup's @rollup/plugin-replace at build time.
- * In production builds this is `false`, allowing Terser to eliminate debug-only code.
+ *
+ * Replaced by Rollup's @rollup/plugin-replace at build time. The substitution
+ * targets the LITERAL `process.env.NODE_ENV` token; aliasing the access (e.g.
+ * `const env = process.env; env?.NODE_ENV`) defeats the replacement and lets
+ * the IIFE run unchanged in browsers — where `typeof process === 'undefined'`
+ * is **false** under Webpack-style globals but **true** under content-script
+ * isolation, so the original aliased form unintentionally returned `true`
+ * (debug enabled) in production extension bundles. The direct comparison
+ * below is folded to a literal `false` by Terser in production builds and to
+ * `true` in development builds.
+ *
+ * In production builds this is `false`, allowing Terser to eliminate
+ * debug-only code via dead-code elimination.
  */
-export const DEBUG: boolean = /* @__PURE__ */ (() => {
-    if (typeof process !== 'undefined') {
-        const env = (process as { env?: { NODE_ENV?: string } }).env;
-        if (env?.NODE_ENV === 'production') return false;
-    }
-    return true;
-})();
+export const DEBUG: boolean = process.env.NODE_ENV !== 'production';
 
 /**
  * Runtime debug flag — checked on every log call, but ONLY in debug builds.

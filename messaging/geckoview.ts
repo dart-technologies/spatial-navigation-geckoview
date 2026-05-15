@@ -161,12 +161,26 @@ export class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
         }
 
         // Fallback to sendNativeMessage with the hardcoded app id.
+        //
+        // `sendNativeMessage` is promise-returning in WebExtensions, so a
+        // synchronous try/catch only catches launch-path errors (e.g. the
+        // function is missing). The async failure case (native host not
+        // installed, runtime rejects the message) lands as a promise
+        // rejection — we attach `.catch` so the message gets queued for
+        // retry and we never leak an unhandled-rejection warning.
         const b = getBrowser();
         if (b?.runtime?.sendNativeMessage) {
             try {
-                b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
+                const result = b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
+                if (result && typeof (result as Promise<unknown>).then === 'function') {
+                    (result as Promise<unknown>).catch((err) => {
+                        log.warn('sendNativeMessage rejected, requeueing', err);
+                        this.queueMessage(fullMessage);
+                    });
+                }
                 return true;
-            } catch {
+            } catch (err) {
+                log.warn('sendNativeMessage threw, requeueing', err);
                 this.queueMessage(fullMessage);
                 return false;
             }

@@ -5,6 +5,40 @@ All notable changes to the Spatial Navigation for GeckoView extension will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] — 2026-05-15
+
+A feature release focused on input-modality awareness, smarter boundary behavior, and visual-rect accuracy on real-world sites. **One default behavior change**: `boundaryScrollBehavior` now defaults to `'scroll'` (was effectively `'exit'` in 3.0.x). Set `boundaryScrollBehavior: 'exit'` in `window.spatialNavConfig` to preserve the legacy behavior. All other changes are additive.
+
+### Added
+
+- **Input modality watcher** (`core/modality_watcher.ts`). The extension now owns pointer/touch detection: it listens for trusted `pointerdown`/`touchstart` and posts `inputModalityChange` to the native host whenever the user transitions between hardware D-pad/arrow and touch. Replaces the host-app side modality detection previously implemented in `focus_style_manager.dart`. Also writes a legacy `flutter-modality-control:touch` title-channel postback for back-compat with older host wrappers.
+- **`visibilityMode`** config key with `'always'` (default) and `'hardware-nav-only'` modes. `'hardware-nav-only'` hides the shadow-DOM overlay subtree until the host sets `data-modality="hardware-nav"` and `data-ring="visible"` attributes on the overlay host. Useful for apps that only want the focus ring visible during keyboard/D-pad navigation.
+- **`boundaryScrollBehavior`** config key with `'scroll'` (default), `'exit'`, and `'none'` modes. Replaces the previous always-`focusExit` behavior at scroll-container boundaries. `'scroll'` scrolls the container instead of emitting `focusExit`; `'exit'` preserves 3.0.x behavior; `'none'` does neither.
+- **`overlayInnerGlowOpacity`** config key (0–1, default `0.16`). Tunes the inner glow intensity independent of `overlayGlowOpacity` (outer glow).
+- **`enableFocusPulse`** config key (default `false`). Adds a subtle CSS pulse animation to the focus ring on each navigation event.
+- **`.snap` class on the overlay** for instant cross-viewport jumps. The CSS transition is removed when the overlay needs to jump a large distance (e.g., from one virtual-scroll page to another) to avoid the focus ring "flying" across the screen.
+- **`clearOverlaySuppression(state)`** helper in `utils/focus-helpers.ts`. Atomically clears both the `overlaySuppressed` flag and the `suppressRecoveryTimer`, eliminating an orphan-timer race that could leave the overlay hidden indefinitely.
+- **`CHEVRON_RING_GAP`** constant (14px) in `core/preview.ts`. Replaces the previous size-proportional chevron gap that grew with overlay size — chevrons now sit a uniform 14px from the focus ring.
+- **pageshow modality re-attach** in `main.ts`. After BFCache restore, the modality watcher is reinstalled and the `HANDLER_ID_ATTR` is re-stamped on focusables.
+- **`InputModalityChangeMessage`** type in `messaging/types.ts`. Outbound message shape: `{ type: 'inputModalityChange', modality: 'touch' | 'hardware-nav' }`.
+
+### Changed
+
+- **Pass-1 alignment weight raised 10 → 200** in `core/scoring.ts`. Fixes a class of bugs where a horizontal carousel would prefer the title sibling below an item over the next item in the same row. The increased weight makes the scoring prefer same-axis candidates more strongly.
+- **`utils/observer.ts` now full-refreshes on `aria-hidden`/`hidden` attribute mutations** (previously only on `style`/`class`). Fixes React re-mount races where the overlay would hide momentarily during reconciliation.
+- **Double-`focusExit` collapsed to a single event.** `navigation/movement.ts:MoveInDirectionOptions.notifyOnBoundary` is now used to gate the second-attempt retry path so analytics receive one `focusExit` per user input.
+- **`core/geometry.ts` visual-rect logic** now shrinks the focus ring to a dominant media child when one exists, expands it to fit overflowing logo-style content, and clips it to any ancestor `overflow: hidden` wrapper. Fixes the Squarespace "logo overflows its container" case where the focus ring was huge and off-screen.
+- **`rollup.config.js` now emits `e2e/fixtures/spatial-navigation.js`** in addition to `dist/` and `extension/`. Keeps the Playwright fixture in sync with the production bundle automatically.
+
+### Fixed
+
+- `utils/deprecation.ts` setter bug — the deprecation shim was writing to `window['__<name>_value']` instead of updating the closure variable, so writes to deprecated globals were silently lost. Setters now correctly update closure state.
+- `utils/logger.ts` DEBUG token replacement — the rollup-replace plugin's literal token replacement now applies to the production bundle correctly, so DEBUG-gated branches tree-shake as expected.
+
+### Migration
+
+Public API is backward-compatible with 3.0.1. The one behavior shift is the `boundaryScrollBehavior` default — apps that depended on the previous always-`focusExit` behavior at scroll boundaries should set `boundaryScrollBehavior: 'exit'` in `window.spatialNavConfig` before upgrading. See [`docs/MIGRATION.md`](docs/MIGRATION.md#v301--v310) for full guidance.
+
 ## [3.0.1] — 2026-05-15
 
 A hygiene + security hardening release. No public API changes; default behavior shifts noted under **Behavior changes**. Bundled eight security fixes after the initial hygiene work — see **Security** below.
@@ -13,7 +47,7 @@ A hygiene + security hardening release. No public API changes; default behavior 
 
 Eight hardening fixes addressing CSS injection, DoS, prototype pollution, telemetry exfiltration, and info-disclosure surfaces. All fixes are server- and client-side compatible with existing v3.0.0 deployments — no API or configuration changes required.
 
-- **`d23e1ab`** — Pin native-messaging app id to `spatial_navigation_native`; strip `nativeAppId` from user-supplied config. Prevents a hostile page from rerouting telemetry to an attacker-controlled native messaging host.
+- **`d23e1ab`** — Pin native-messaging app id to the hard-coded `flutter_geckoview` constant in both [`background.ts`](background.ts) and [`messaging/geckoview.ts`](messaging/geckoview.ts); strip `nativeAppId` from user-supplied config. Prevents a hostile page from rerouting telemetry to an attacker-controlled native messaging host.
 - **`48ace4b`** — Remove `spatial_navigation.debug.js` from `web_accessible_resources` in `manifest.json`. The debug bundle exposed the extension UUID and debug bundle source on `moz-extension://<uuid>/spatial_navigation.debug.js`, allowing fingerprinting and easier reverse-engineering.
 - **`cf0c889`** — Validate `disabledColor` config value against an explicit color-syntax allowlist (`#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `hsl()`, `hsla()`, named colors). Stops shadow-DOM CSS injection via crafted strings like `red; --x: url(http://attacker)`.
 - **`89faa8c`** — Stop reading `window.spatialNavState` back into the module. State is now a module-private singleton; `window.spatialNavState` is publish-only (for debugging/legacy compatibility). Prevents a page that pre-populates `window.spatialNavState` from hijacking the overlay target or focusables list.

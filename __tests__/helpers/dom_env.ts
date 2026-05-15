@@ -292,6 +292,10 @@ export function createTestState(
         overlayScrimOpacity: 0.06,
         overlayGlowOpacity: 0.35,
         overlayGlowBlur: 14,
+        overlayInnerGlowOpacity: 0.16,
+        visibilityMode: 'always',
+        enableFocusPulse: false,
+        boundaryScrollBehavior: 'scroll',
         observeMutations: true,
         observeScroll: true,
         mutationDebounce: 100,
@@ -351,6 +355,7 @@ export function createTestState(
         activeResizeObserver: null,
         updateTimer: null,
         overlaySuppressed: false,
+        suppressRecoveryTimer: null,
         nextTargets: { up: null, down: null, left: null, right: null },
         noTargetTimers: {},
         lastFocusedElement: null,
@@ -390,6 +395,7 @@ export function createTestState(
         currentTrap: null,
         detectedFramework: false,
         handlerId: 1,
+        lastReportedModality: 'touch',
         ...overrides,
     } as unknown as SpatialNavState;
 

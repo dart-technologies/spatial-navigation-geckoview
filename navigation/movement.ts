@@ -19,6 +19,7 @@ import {
 import { dispatchNavEvent } from '../utils/events';
 import { directionByName, type Direction, type DirectionMap, type SpatialNavConfig } from '../core/config';
 import { sendFocusExit } from '../utils/bridge';
+import { clearOverlaySuppression } from '../utils/focus-helpers';
 import { createLogger } from '../utils/logger';
 import type {
     SpatialNavState,
@@ -191,18 +192,64 @@ function getCachedOrComputeCandidate(
  * @param state - Global state object
  * @returns True if focus moved, false otherwise
  */
-export function moveInDirection(direction: Direction, event: Event | null, state: SpatialNavState): boolean {
-    if (state.overlaySuppressed) {
-        state.overlaySuppressed = false;
-    }
+/**
+ * Options for `moveInDirection`.
+ */
+export interface MoveInDirectionOptions {
+    /**
+     * When true (default), boundary detection runs the full "no target"
+     * pipeline: `sendFocusExit` is relayed to the native host,
+     * `spatialNavigationExit` CustomEvent is dispatched on document, the
+     * overlay is suppressed.
+     *
+     * When false, the function returns false on boundary WITHOUT
+     * triggering side effects. Used by `handleKeyDown` for the first of
+     * its two-attempt navigate-and-retry sequence — the retry decides
+     * whether the boundary is genuine, and only THEN do we notify.
+     *
+     * Before this option existed, both attempts triggered `sendFocusExit`,
+     * which propagated to the native host as two `onFocusExit` events,
+     * which propagated to analytics as two `trackFocusExit` events.
+     * Users saw "noisy clusters" of 2× analytics per boundary keypress
+     * (4× across two presses, 8× across four, etc.). Gating the
+     * notification on `notifyOnBoundary: true` for the final attempt
+     * only collapses each user keypress to at most one analytics event.
+     */
+    notifyOnBoundary?: boolean;
+}
 
+export function moveInDirection(
+    direction: Direction,
+    event: Event | null,
+    state: SpatialNavState,
+    options: MoveInDirectionOptions = {}
+): boolean {
     const config = state.config;
     const active = getActiveElement();
     const currentIndex =
         active && active instanceof HTMLElement ? state.focusableElements.indexOf(active) : -1;
 
     if (currentIndex === -1) {
+        // Bail BEFORE clearing `overlaySuppressed` — we never actually
+        // attempted navigation. The previous order cleared the
+        // suppression flag eagerly at the top of the function, then
+        // returned `false` here without showing the overlay or wiring
+        // any recovery. That stranded the page in the "not suppressed,
+        // not shown" state until a NEW suppression source ran. Now the
+        // suppression flag only changes when a real navigation attempt
+        // begins.
         return false;
+    }
+
+    // Past the bail-out: we have a valid active focusable and are
+    // committing to a navigation attempt. Clear any in-flight
+    // suppression — AND cancel any pending recovery timer — so the
+    // overlay is free to follow the new target. The atomic helper
+    // matches the cleanup the listener sites in main.ts do, eliminating
+    // the prior asymmetry where a successful nav left an orphan timer
+    // that would fire 350ms later on stale state.
+    if (state.overlaySuppressed) {
+        clearOverlaySuppression(state);
     }
 
     const currentEntry = state.focusables[currentIndex];
@@ -212,6 +259,13 @@ export function moveInDirection(direction: Direction, event: Event | null, state
     const target = getCachedOrComputeCandidate(currentIndex, direction, state);
 
     if (!target) {
+        // `notifyOnBoundary` defaults to `true` for backwards compatibility
+        // with direct callers (debug menu, scripts). The internal
+        // `handleKeyDown` retry sets it `false` on the first attempt to
+        // avoid double-firing analytics — see `MoveInDirectionOptions`
+        // doc-comment above.
+        const notifyOnBoundary = options.notifyOnBoundary !== false;
+
         // Focus trap detection
         const trapInfo = detectFocusTrap(currentEntry.element, config);
 
@@ -224,51 +278,134 @@ export function moveInDirection(direction: Direction, event: Event | null, state
             escapeKey: trapInfo?.escapeKey,
         });
 
-        // Accessibility announcement for boundaries
-        if (config.announceBoundaries) {
-            if (trapInfo) {
-                announce(`In ${trapInfo.trapId}. Press ${trapInfo.escapeKey} to close.`, state, 'polite');
+        if (notifyOnBoundary) {
+            // `boundaryScrollBehavior` controls what happens here:
+            //   - 'scroll': scroll the page by half a viewport in
+            //     vertical directions; suppress the host notification.
+            //     Falls through to 'exit' when the page is already at
+            //     the scroll extent in that direction — without that
+            //     fallthrough, the user can't escape the WebView once
+            //     they reach top/bottom of the page (no `focusExit` is
+            //     ever sent to the host).
+            //   - 'none': silent — no exit event, no scroll.
+            //   - 'exit' (default): dispatch `spatialNavigationExit` and
+            //     post `focusExit` to the native host.
+            const boundaryBehavior = config.boundaryScrollBehavior;
+
+            // Whether the exit-branch below was reached via fall-through
+            // from `boundaryScrollBehavior === 'scroll'` (no scroll room
+            // in the direction). In that case the host's `focusExit`
+            // handler should still get the chance to act (e.g. AAOS
+            // pulls focus to the address bar on `up`), but the extension
+            // MUST NOT pre-emptively suppress the overlay — for `down`
+            // at the page bottom the host typically does nothing and
+            // the suppress-then-auto-recover dance produces a visible
+            // 350ms "ring slides off and returns" artifact with no
+            // actual focus change.
+            let fellThroughFromScroll = false;
+
+            if (boundaryBehavior === 'scroll' && (direction.name === 'up' || direction.name === 'down')) {
+                const scrollY = window.scrollY;
+                const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+                const hasScrollRoom = direction.name === 'up' ? scrollY > 0 : scrollY < maxScrollY - 1; // 1px tolerance for subpixel rounding
+
+                if (hasScrollRoom) {
+                    try {
+                        const reducedMotion =
+                            window.matchMedia &&
+                            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                        const step = Math.max(120, Math.round(window.innerHeight * 0.5));
+                        const delta = direction.name === 'down' ? step : -step;
+                        window.scrollBy({
+                            top: delta,
+                            behavior: reducedMotion ? 'auto' : 'smooth',
+                        });
+                        log.debug(`boundary scroll: ${direction.name} by ${delta}px`);
+                    } catch (e) {
+                        log.debug('boundary scroll failed', e);
+                    }
+                    if (state.nextTargets) {
+                        state.nextTargets[direction.name] = null;
+                    }
+                    state.currentTrap = trapInfo;
+                    return false;
+                }
+                // No scroll room — fall through to the 'exit' branch so
+                // the user can escape (e.g., return to the native
+                // address bar above the WebView). Mark the fall-through
+                // so we skip the local overlay suppress below.
+                fellThroughFromScroll = true;
+                log.debug(`boundary ${direction.name}: no scroll room, falling through to exit`);
+            }
+
+            if (boundaryBehavior === 'none') {
+                // Silent boundary — no exit dispatch, no scroll.
+                if (state.nextTargets) {
+                    state.nextTargets[direction.name] = null;
+                }
+                state.currentTrap = trapInfo;
+                return false;
+            }
+
+            // Default 'exit' behaviour. Also reached when
+            // `boundaryScrollBehavior === 'scroll'` had no scroll room
+            // (see fall-through above).
+            // Accessibility announcement for boundaries
+            if (config.announceBoundaries) {
+                if (trapInfo) {
+                    announce(`In ${trapInfo.trapId}. Press ${trapInfo.escapeKey} to close.`, state, 'polite');
+                } else {
+                    announce(`Edge of content. Cannot move ${direction.name}.`, state, 'polite');
+                }
+            }
+
+            log.debug(`boundary reached, notifying native: ${direction.name}`);
+            sendFocusExit(direction.name, !!trapInfo)
+                .then((result) => {
+                    if (!result.success) {
+                        log.debug('focusExit relay error', result.error);
+                    }
+                })
+                .catch((e) => {
+                    log.debug('focusExit error', e);
+                });
+
+            if (!fellThroughFromScroll) {
+                // Real exit (boundaryScrollBehavior:'exit' OR a
+                // legitimately-unscrollable direction in 'scroll' mode
+                // — i.e. horizontal). Dispatch the custom event so any
+                // wrapper-side suppress-on-exit listener fires.
+                try {
+                    const exitEvent = new CustomEvent('spatialNavigationExit', {
+                        detail: {
+                            direction: direction.name,
+                            inTrap: !!trapInfo,
+                            trapInfo: trapInfo,
+                        },
+                        bubbles: true,
+                        cancelable: false,
+                    });
+                    document.dispatchEvent(exitEvent);
+                } catch (e) {
+                    log.warn('failed to dispatch exit event', e);
+                }
+
+                // Hide overlay & previews while focus exits to native UI.
+                // Without suppression, mutation/scroll observers can re-show the overlay.
+                state.overlaySuppressed = true;
+                if (state.updateTimer) {
+                    cancelAnimationFrame(state.updateTimer);
+                    state.updateTimer = null;
+                }
+                hideOverlay(state);
+                hidePreviewElements(state);
             } else {
-                announce(`Edge of content. Cannot move ${direction.name}.`, state, 'polite');
+                log.debug(
+                    'scroll-fall-through exit — skipping local overlay suppress; ' +
+                        'host handler decides whether focus actually leaves'
+                );
             }
         }
-
-        log.debug(`boundary reached, notifying native: ${direction.name}`);
-        sendFocusExit(direction.name, !!trapInfo)
-            .then((result) => {
-                if (!result.success) {
-                    log.debug('focusExit relay error', result.error);
-                }
-            })
-            .catch((e) => {
-                log.debug('focusExit error', e);
-            });
-
-        // Also dispatch custom event for web app listeners
-        try {
-            const exitEvent = new CustomEvent('spatialNavigationExit', {
-                detail: {
-                    direction: direction.name,
-                    inTrap: !!trapInfo,
-                    trapInfo: trapInfo,
-                },
-                bubbles: true,
-                cancelable: false,
-            });
-            document.dispatchEvent(exitEvent);
-        } catch (e) {
-            log.warn('failed to dispatch exit event', e);
-        }
-
-        // Hide overlay & previews while focus exits to native UI.
-        // Without suppression, mutation/scroll observers can re-show the overlay.
-        state.overlaySuppressed = true;
-        if (state.updateTimer) {
-            cancelAnimationFrame(state.updateTimer);
-            state.updateTimer = null;
-        }
-        hideOverlay(state);
-        hidePreviewElements(state);
 
         if (state.nextTargets) {
             state.nextTargets[direction.name] = null;
@@ -308,6 +445,15 @@ export function moveInDirection(direction: Direction, event: Event | null, state
         passIndex: typeof target.passIndex === 'number' ? target.passIndex : 0,
         timestamp: Date.now(),
     };
+
+    // log.info (stripped from prod bundle) so debug builds show which
+    // element wins the directional scoring without flooding prod
+    // logcat at navigation rate. Switch to the .debug.js bundle to
+    // capture these via adb when diagnosing "DOWN went somewhere
+    // unexpected" reports.
+    log.info(
+        `moveInDirection(${direction.name}) from=${describeElement(currentEntry.element)} to=${describeElement(target.data.element)} passIndex=${target.passIndex ?? 0}`
+    );
 
     simulatePointerEvents(currentEntry.element, target.data.element);
 
@@ -360,7 +506,43 @@ export function moveInDirection(direction: Direction, event: Event | null, state
                 else if (snapAlign.includes('end')) inline = 'end';
             }
 
-            target.data.element.scrollIntoView({ block: block, inline: inline });
+            // Add visual breathing room so the focus ring's outer halo
+            // (glow box-shadow + outline-offset) isn't clipped by the
+            // viewport edge when `block: 'nearest'` would snap the
+            // element flush against the edge.
+            //
+            // Previously this was a follow-up `scrollBy` in a nested
+            // `requestAnimationFrame`, which produced a visible
+            // "double-stage" focus settle (element snaps to the edge,
+            // then jumps 16 px inward one frame later). The fix:
+            // temporarily set `scroll-margin` on the target element
+            // BEFORE calling `scrollIntoView`. Native scroll math
+            // honours `scroll-margin` and bakes the buffer into the
+            // SINGLE atomic scroll — no second frame, no visible
+            // double-stage.
+            //
+            // We restore the prior inline `scroll-margin` after a
+            // microtask so page styles aren't permanently mutated.
+            const el = target.data.element;
+            const SCROLL_BUFFER = '16px';
+            const prevScrollMargin = el.style.scrollMargin;
+            try {
+                el.style.scrollMargin = SCROLL_BUFFER;
+                el.scrollIntoView({ block: block, inline: inline });
+            } finally {
+                // Restore on the next microtask so the scroll math runs
+                // with the buffer applied, then the inline style is
+                // cleared. We do NOT restore synchronously because some
+                // browsers schedule the scroll computation off the main
+                // thread and might re-read style mid-scroll.
+                queueMicrotask(() => {
+                    try {
+                        el.style.scrollMargin = prevScrollMargin;
+                    } catch {
+                        // ignore
+                    }
+                });
+            }
         } catch {
             // ignore scroll failures
         }

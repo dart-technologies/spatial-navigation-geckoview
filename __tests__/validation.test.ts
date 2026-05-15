@@ -115,10 +115,7 @@ describe('validateUserConfig', () => {
     test('caps oversize virtualContainerSelectors array (DoS hardening)', () => {
         const flood = Array.from({ length: 500 }, (_, i) => `.sel-${i}`);
         const result = validateUserConfig({ virtualContainerSelectors: flood });
-        assert.ok(
-            result.virtualContainerSelectors !== undefined,
-            'flood is truncated, not dropped'
-        );
+        assert.ok(result.virtualContainerSelectors !== undefined, 'flood is truncated, not dropped');
         assert.ok(
             (result.virtualContainerSelectors ?? []).length <= 32,
             `expected <= 32 items, got ${(result.virtualContainerSelectors ?? []).length}`
@@ -161,6 +158,115 @@ describe('validateUserConfig', () => {
         });
         assert.equal((result as Record<string, unknown>).nativeAppId, undefined);
         assert.equal(result.color, '#000');
+    });
+
+    test('does not throw on Object.prototype-chain keys (DoS hardening)', () => {
+        // Without null-prototype on ENUM_KEYS, `'toString' in ENUM_KEYS`
+        // resolves to Object.prototype.toString and ENUM_KEYS[key].has(value)
+        // throws TypeError, propagating out of getConfig() and aborting init.
+        // A page setting `JSON.parse('{"toString":"x"}')` could brick the
+        // extension on its origin.
+        for (const key of ['toString', 'hasOwnProperty', 'valueOf', 'constructor', 'isPrototypeOf']) {
+            assert.doesNotThrow(() => {
+                validateUserConfig({ [key]: 'x' });
+            }, `key "${key}" must not throw via prototype chain`);
+        }
+    });
+
+    test('clamps numeric values during validation (configUpdate path)', () => {
+        // The configUpdate handler in main.ts validates inbound native config
+        // and Object.assigns it onto state.config — without going through
+        // getConfig's clamps. Validation-time clamps make this path safe.
+        const result = validateUserConfig({
+            overlayZIndex: -1,
+            arrowScale: 1e6,
+            safeAreaMargin: 99999,
+            overlayGlowBlur: 10000,
+            outlineWidth: 9999,
+        });
+        assert.equal(result.overlayZIndex, 1, 'overlayZIndex clamped up to min');
+        assert.equal(result.arrowScale, 4, 'arrowScale clamped down to max');
+        assert.equal(result.safeAreaMargin, 200, 'safeAreaMargin clamped down to max');
+        assert.equal(result.overlayGlowBlur, 64, 'overlayGlowBlur clamped down to max');
+        assert.equal(result.outlineWidth, 20, 'outlineWidth clamped down to max');
+    });
+
+    test('passes through in-range numeric values unchanged', () => {
+        const result = validateUserConfig({
+            overlayZIndex: 50,
+            arrowScale: 1.25,
+            safeAreaMargin: 24,
+        });
+        assert.equal(result.overlayZIndex, 50);
+        assert.equal(result.arrowScale, 1.25);
+        assert.equal(result.safeAreaMargin, 24);
+    });
+
+    test('clamps observer / timer / scoring numerics (3.1.0 hardening)', () => {
+        // Before 3.1.0 these keys were typed-only — a page could ship
+        // `mutationDebounce: Number.MAX_SAFE_INTEGER` and stall every
+        // refresh, or `scrollThreshold: -Infinity` and break dirty-tracking.
+        const result = validateUserConfig({
+            mutationDebounce: 9_999_999,
+            scrollThreshold: -1000,
+            virtualScrollDebounce: 9_999_999,
+            precomputeCacheTimeout: 9_999_999,
+            overlapThreshold: 1e9,
+            gridAlignmentTolerance: -50,
+            minElementSize: 1e9,
+        });
+        assert.equal(result.mutationDebounce, 5_000, 'mutationDebounce clamped to 5s');
+        assert.equal(result.scrollThreshold, 0, 'scrollThreshold clamped to 0');
+        assert.equal(result.virtualScrollDebounce, 5_000);
+        assert.equal(result.precomputeCacheTimeout, 60_000);
+        assert.equal(result.overlapThreshold, 4_096);
+        assert.equal(result.gridAlignmentTolerance, 0);
+        assert.equal(result.minElementSize, 4_096);
+    });
+
+    test('iframeSupport nested validator drops unknown fields + bad focusMethod (3.1.0)', () => {
+        const result = validateUserConfig({
+            iframeSupport: {
+                enabled: true,
+                selector: 'iframe.embed',
+                focusMethod: 'attacker-controlled-value',
+                someExtraField: 'should be dropped',
+            },
+        });
+        assert.deepEqual(result.iframeSupport, {
+            enabled: true,
+            selector: 'iframe.embed',
+            // focusMethod dropped — not in {element, contentWindow}
+            // someExtraField dropped — not in schema
+        });
+    });
+
+    test('focusGroups nested validator drops unknown fields + bad boundaryBehavior (3.1.0)', () => {
+        const result = validateUserConfig({
+            focusGroups: {
+                enabled: true,
+                boundaryBehavior: 'evil',
+                defaultRules: { foo: 'bar' },
+                somethingElse: 42,
+            },
+        });
+        assert.deepEqual(result.focusGroups, {
+            enabled: true,
+            defaultRules: { foo: 'bar' },
+            // boundaryBehavior dropped — not in {wrap, stop, exit}
+            // somethingElse dropped — not in schema
+        });
+    });
+
+    test('focusGroups rejects non-object defaultRules (Array shape blocked)', () => {
+        const result = validateUserConfig({
+            focusGroups: {
+                enabled: true,
+                defaultRules: ['not', 'a', 'plain', 'object'],
+            },
+        });
+        // defaultRules dropped because Array.isArray rejected it
+        assert.deepEqual(result.focusGroups, { enabled: true });
     });
 });
 

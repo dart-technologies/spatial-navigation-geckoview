@@ -183,8 +183,21 @@ function flushMutations(state: SpatialNavState): void {
         // This prevents "popping to top" when virtual scroll recycles the focused element
         storePositionHint(state);
 
-        // Check if we need full refresh (DOM structure changed)
-        const needsFullRefresh = mutationBuffer.some((m) => m.type === 'childList');
+        // Force a full refresh whenever the DOM tree changes OR a visibility-
+        // affecting attribute (aria-hidden / hidden) flips. The incremental
+        // path inspects only the mutation target, but aria-hidden/hidden on a
+        // wrapper transitively excludes/restores every focusable inside —
+        // refreshFocusables uses `closest('[aria-hidden="true"]')` and the
+        // computed-style display check, both of which see ancestors. Without
+        // this, toggling a tab panel's wrapper leaves stale focusables until
+        // the next childList mutation.
+        const needsFullRefresh = mutationBuffer.some((m) => {
+            if (m.type === 'childList') return true;
+            if (m.type === 'attributes') {
+                return m.attributeName === 'aria-hidden' || m.attributeName === 'hidden';
+            }
+            return false;
+        });
 
         // Invalidate precomputed cache
         state.dirty = true;
@@ -200,10 +213,36 @@ function flushMutations(state: SpatialNavState): void {
             }
 
             const active = getActiveElement() as HTMLElement | null;
-            if (active && state.focusableElements && state.focusableElements.includes(active)) {
+            // Earlier versions hid the overlay whenever `state.focusableElements`
+            // didn't include the active element. That over-fires:
+            //   - React/Vue/etc. re-mount focused elements with new node
+            //     identity during render — same logical focus, different
+            //     node reference; the new node hadn't yet been picked up
+            //     by `refreshFocusables` at this point in the mutation.
+            //   - Scroll-driven lazy-loads on rich pages (e.g. dart.art's
+            //     hero animations) fire frequent childList mutations
+            //     that trigger a full refresh; transient races between
+            //     the refresh and the host's still-attached focus
+            //     element caused the user-reported "focus ring vanishes
+            //     after viewport shift" bug.
+            //
+            // Only hide if the active element is genuinely no longer a
+            // valid focus target — disconnected from the DOM or fallen
+            // back to body / documentElement. Otherwise reposition.
+            const isValidFocus =
+                !!active &&
+                active instanceof HTMLElement &&
+                active.isConnected &&
+                active !== document.body &&
+                active !== document.documentElement;
+            if (isValidFocus) {
                 scheduleOverlayUpdate(active, state);
             } else if (state.overlay) {
-                log.debug('current focus invalidated by mutation, hiding overlay');
+                log.debug('current focus invalidated by mutation, hiding overlay', {
+                    hasActive: !!active,
+                    isConnected: active?.isConnected,
+                    isBody: active === document.body,
+                });
                 hideOverlay(state);
             }
         };

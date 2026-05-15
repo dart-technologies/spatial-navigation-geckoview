@@ -21,15 +21,16 @@
 import { getConfig, directionByName, validateUserConfig, type DirectionName } from './core/config';
 import { getState, type SpatialNavState } from './core/state';
 import { ensureStyles, ensureOverlay, showOverlay, hideOverlay } from './core/overlay';
-import { hidePreviewElements } from './core/preview';
+import { hidePreviewElements, updatePreviewVisuals } from './core/preview';
 import {
     refreshFocusables,
     getActiveElement,
     describeElement,
     attachVirtualScrollSentinels,
     setupAccessibilityAnnouncer,
+    focusInitialElement,
 } from './utils/dom';
-import { attachHandlers } from './navigation/handlers';
+import { attachHandlers, HANDLER_ID_ATTR } from './navigation/handlers';
 import { attachMutationObserver } from './utils/observer';
 import { initDebugApi } from './utils/debug';
 import { detectRuntimeContext, formatRuntimeLabel } from './utils/runtime';
@@ -37,15 +38,20 @@ import { moveInDirection } from './navigation/movement';
 import { findDirectionalCandidate } from './core/scoring';
 import { createLogger } from './utils/logger';
 import { installLegacyDeprecations } from './utils/deprecation';
+import { clearOverlaySuppression } from './utils/focus-helpers';
 import { GeckoViewMessagingAdapter, NoopMessagingAdapter } from './messaging';
 import type { MessagingAdapter, InboundMessage } from './messaging';
+import {
+    setupInputModalityWatcher as installModalityWatcher,
+    buildDefaultModalityPostback,
+} from './core/modality_watcher';
 import type { FocusableAreasOptions, SpatialNavigationSearchOptions } from './globals';
 
 const log = createLogger('Main');
 
 const STYLE_ID = 'spatnav-focus-styles';
 const OVERLAY_HOST_ID = 'spatnav-focus-host';
-const VERSION = '3.0.1';
+const VERSION = '3.1.0';
 
 // Debounce window for the pageshow re-init handler. Below this threshold we
 // treat consecutive events as the same logical navigation.
@@ -123,12 +129,27 @@ function postToNative(message: {
         | 'spatialNavInit'
         | 'focusChange'
         | 'focusExit'
+        | 'inputModalityChange'
         | 'tabClosed'
         | 'extensionInstalled'
         | 'extensionUpdated';
     [key: string]: unknown;
 }): boolean {
     return messagingAdapter?.send(message) ?? false;
+}
+
+/**
+ * Install the in-page pointer/touch watcher around the active messaging
+ * adapter. Delegates to `core/modality_watcher.ts` so the watcher's
+ * filtering + back-compat title-channel logic is testable in isolation.
+ */
+function setupInputModalityWatcher(state: SpatialNavState): void {
+    installModalityWatcher(
+        state,
+        buildDefaultModalityPostback((msg) => {
+            postToNative(msg);
+        })
+    );
 }
 
 /**
@@ -245,6 +266,12 @@ function reinitializeAfterPageshow(state: SpatialNavState): void {
 
     log.debug('pageshow: re-initializing', { needsStyles, needsOverlay });
 
+    // Re-stamp the handler-id on the new documentElement. The window-level
+    // keydown listener captured the original handlerId in closure and short-
+    // circuits when the DOM attribute disagrees — without this restamp the
+    // listener would silently drop every keystroke after a document swap.
+    document.documentElement.setAttribute(HANDLER_ID_ATTR, String(state.handlerId));
+
     if (needsOverlay) {
         state.overlayHost = null;
         state.overlay = null;
@@ -272,6 +299,13 @@ function reinitializeAfterPageshow(state: SpatialNavState): void {
 
     refreshFocusables(state);
     showOverlay(null, state);
+
+    // BFCache restore swaps the document — `document.addEventListener`
+    // listeners attached to the old document are gone. Clear the install
+    // marker so `setupInputModalityWatcher` re-attaches against the fresh
+    // document.
+    window.__spatnavModalityWatcherAttached = false;
+    setupInputModalityWatcher(state);
 }
 
 /**
@@ -388,6 +422,18 @@ function initSpatialNavigation(): void {
     log.info('initialization complete');
 
     const suppressOverlay = (reason: string): void => {
+        // [diag] Every set of `overlaySuppressed=true` happens here OR
+        // in movement.ts's default-exit branch. If the user-reported
+        // "ring vanishes after viewport shift" log trail crosses this
+        // function, the boundary-exit fall-through fired (no scroll
+        // room, or boundaryScrollBehavior !== 'scroll').
+        // Promoted to log.warn (from log.info) so the prod bundle keeps
+        // this diagnostic — it`s the smoking-gun signal for "ring vanished
+        // / HUD reads suppressed" investigations, but the prod bundle
+        // strips console.log/info/debug.
+        log.warn(
+            `suppressOverlay(reason=${reason}) scrollY=${window.scrollY} active=${document.activeElement?.tagName?.toLowerCase() ?? '(null)'}`
+        );
         state.overlaySuppressed = true;
         if (state.updateTimer) {
             cancelAnimationFrame(state.updateTimer);
@@ -396,19 +442,213 @@ function initSpatialNavigation(): void {
         hideOverlay(state);
         hidePreviewElements(state);
         log.debug(`overlay suppressed (${reason})`);
+
+        // Cancel any pending recovery — the new suppression supersedes.
+        if (state.suppressRecoveryTimer != null) {
+            clearTimeout(state.suppressRecoveryTimer);
+            state.suppressRecoveryTimer = null;
+        }
+
+        // Auto-recover for `spatialNavigationExit` only. The other two
+        // sources (`window.blur`, `document.hidden`) reflect a genuine
+        // exit from the document and should remain suppressed until the
+        // host explicitly re-shows or the page becomes visible again.
+        //
+        // `spatialNavigationExit` fires on internal boundary attempts
+        // (no target in DOM in this direction). The user's focus is
+        // still on the element they were trying to navigate from — and
+        // crucially, the wrapper may have scrolled the page in response
+        // to expose more content. After the scroll settles, if focus
+        // is still on a real focusable element, the overlay should
+        // re-appear: the user is still in the document, not in native
+        // UI.
+        if (reason !== 'spatialNavigationExit') return;
+
+        state.suppressRecoveryTimer = setTimeout(() => {
+            state.suppressRecoveryTimer = null;
+            // Someone else already cleared suppression (e.g., a
+            // subsequent moveInDirection succeeded). Nothing to do.
+            if (!state.overlaySuppressed) return;
+
+            const active = document.activeElement;
+            // Body / documentElement / null means focus is no longer on
+            // a real focusable — focus genuinely left to native UI
+            // (e.g., browser chrome). Keep suppressed.
+            if (!active || active === document.body || active === document.documentElement) {
+                return;
+            }
+            if (!(active instanceof HTMLElement)) return;
+
+            state.overlaySuppressed = false;
+            // [diag] Auto-recover from spatialNavigationExit: 350ms
+            // after the suppression, re-show the ring on the active
+            // element if it's still a real focusable.
+            log.info('suppressOverlay auto-recover firing', {
+                activeTag: (active as HTMLElement).tagName.toLowerCase(),
+            });
+            showOverlay(active, state);
+            log.debug('overlay auto-recovered after spatialNavigationExit settle');
+        }, 350);
     };
 
-    // 16. Hide overlay when focus leaves the document (e.g., returning to address bar)
+    // 16. Install the input-modality watcher (`pointerdown` + `touchstart`).
+    //     Reports touch transitions to the native host so consumer wrappers
+    //     can hide their focus ring. The wrapper's previous
+    //     `runJavaScript`-based install is now redundant.
+    setupInputModalityWatcher(state);
+
+    // 17. Hide overlay when focus leaves the document (e.g., returning to address bar)
     window.addEventListener('blur', () => suppressOverlay('window.blur'));
 
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) suppressOverlay('document.hidden');
     });
 
-    // Hide overlay when spatial navigation exits to native UI
+    // Hide overlay when spatial navigation exits to native UI. Auto-recovers
+    // 350ms later if focus is still on a real focusable element — the
+    // boundary case where the user pressed a directional key, no target
+    // was found, the wrapper scrolled the page, and focus stayed on the
+    // previously-focused element.
     document.addEventListener('spatialNavigationExit', () => suppressOverlay('spatialNavigationExit'));
 
-    // 17. Re-initialize on page navigation
+    // Cross-world bridge for the wrapper's `engage-on-transition` hook.
+    //
+    // The WebExtension content script runs in an isolated JS world —
+    // the host's `runJavaScript` (page main world) can't read
+    // `window.spatialNavState` or call `window.showSpatialNavOverlay`.
+    // They share the same `document`, though, so a CustomEvent fired
+    // from the host on `document` IS received here.
+    //
+    // The host fires this on a touch → hardwareNav transition when the
+    // first-press-swallow flag is armed. Without it, the first press
+    // from a state where the WebView has no DOM-focused element (cold
+    // boot / fresh page / address-bar → WebView focus traversal) flips
+    // modality + sets data-ring=visible but the actual
+    // #spatnav-focus-overlay element stays display:none. The user
+    // would see no ring on the first press and would need to press
+    // again to trigger a key dispatch + recovery.
+    //
+    // Semantics:
+    //   - If a real focusable is already DOM-focused: show the ring on
+    //     it (preserves "tap a link, press Down, see ring on tapped
+    //     element" UX).
+    //   - Otherwise: focus the FIRST focusable. The window-level
+    //     `focus` capture-listener in `attachHandlers` picks up the
+    //     event and triggers `scheduleOverlayUpdate` → `showOverlay`,
+    //     putting the ring on the first element.
+    // `spatnav-clear-suppress` — lightweight bridge fired by the host on
+    // EVERY `notifyHardwareNavActivity` (touch → hardwareNav AND
+    // hardwareNav → hardwareNav). Just clears stale `overlaySuppressed`
+    // without trampling focus. Needed because `engage-overlay` only fires
+    // on the touch → hardwareNav transition (to avoid refocusing the
+    // first focusable when the user is mid-navigation), but a prior
+    // `window.blur` (host address bar got focus) sets `suppressed = true`
+    // and never auto-recovers. If the user comes back to the WebView via
+    // D-pad while modality was already hardwareNav, engage doesn`t fire,
+    // suppress stays true, the HUD shows "suppressed", and the next
+    // `scheduleOverlayUpdate` is silently early-returned.
+    document.addEventListener('spatnav-clear-suppress', () => {
+        if (state.overlaySuppressed) {
+            // log.warn (preserved in prod) — the load-bearing transition
+            // when the user returns to the WebView after a `window.blur`
+            // (Flutter focus left the WebView temporarily).
+            log.warn('spatnav-clear-suppress: clearing stale overlaySuppressed');
+            clearOverlaySuppression(state);
+        }
+        // Re-paint the overlay AND directional chevrons on the current
+        // focused focusable, if any. Without this, the `wasTouch=false`
+        // path of `notifyHardwareNavActivity` (e.g., user returns to
+        // WebView while modality was already hardwareNav) writes
+        // `data-ring=visible` on the host but the inner
+        // `#spatnav-focus-overlay` stays at `opacity: 0` (no `.visible`
+        // class) — host visible, ring invisible. Also: chevron previews
+        // are rendered via `updatePreviewVisuals` from the focus
+        // capture-listener`s scheduleOverlayUpdate path, which is gated
+        // on `state.overlaySuppressed` and silently early-returns when
+        // suppress was true at the time of the focus event. After we
+        // clear suppress here, we must explicitly call
+        // `updatePreviewVisuals` ourselves — otherwise the ring renders
+        // but the up/down/left/right chevrons stay invisible (matches
+        // the user-reported "DART logo focus ring doesn`t have any
+        // arrows" after UP-then-DOWN sequence).
+        try {
+            const active = document.activeElement as HTMLElement | null;
+            if (
+                active &&
+                active !== document.body &&
+                active !== document.documentElement &&
+                active instanceof HTMLElement
+            ) {
+                const list = state.focusableElements;
+                if (Array.isArray(list) && list.indexOf(active) !== -1) {
+                    showOverlay(active, state);
+                    updatePreviewVisuals(
+                        active,
+                        null,
+                        findDirectionalCandidate,
+                        directionByName,
+                        describeElement,
+                        state
+                    );
+                }
+            }
+        } catch (e) {
+            log.warn('spatnav-clear-suppress re-paint error', e);
+        }
+    });
+
+    document.addEventListener('spatnav-engage-overlay', () => {
+        try {
+            if (state.overlaySuppressed) {
+                // log.warn (preserved in prod) — load-bearing recovery from
+                // a stale window.blur/document.hidden suppression.
+                log.warn('engage-overlay: clearing stale overlaySuppressed');
+                clearOverlaySuppression(state);
+            }
+            const active = document.activeElement as HTMLElement | null;
+            const focusables = state.focusableElements;
+            if (!Array.isArray(focusables) || focusables.length === 0) {
+                refreshFocusables(state);
+            }
+            const list = state.focusableElements;
+            if (!Array.isArray(list) || list.length === 0) {
+                log.debug('engage-overlay: no focusables to engage');
+                return;
+            }
+            const activeIsFocusable =
+                !!active &&
+                active !== document.body &&
+                active !== document.documentElement &&
+                list.indexOf(active) !== -1;
+            if (activeIsFocusable) {
+                log.info(`engage-overlay: show on active ${describeElement(active)}`);
+                showOverlay(active, state);
+                // Mirror `spatnav-clear-suppress`: render the chevrons
+                // for the current focusable. The `focusInitialElement`
+                // path below relies on the focus event firing
+                // `scheduleOverlayUpdate`, which calls
+                // `updatePreviewVisuals` itself — but the direct
+                // `showOverlay(active)` path above (activeIsFocusable)
+                // does NOT, so the chevrons would be missing for
+                // exactly the same reason as the clear-suppress race.
+                updatePreviewVisuals(
+                    active,
+                    null,
+                    findDirectionalCandidate,
+                    directionByName,
+                    describeElement,
+                    state
+                );
+            } else {
+                log.info('engage-overlay: focus first focusable');
+                focusInitialElement(true, state);
+            }
+        } catch (e) {
+            log.warn('engage-overlay handler error', e);
+        }
+    });
+
+    // 18. Re-initialize on page navigation
     let lastPageshowTime = 0;
     window.addEventListener('pageshow', () => {
         const now = Date.now();

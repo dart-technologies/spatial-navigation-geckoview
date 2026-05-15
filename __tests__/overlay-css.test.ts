@@ -67,10 +67,7 @@ describe('generateShadowCSS — disabledColor injection guard', () => {
         // falls back to grey, preventing attacker payload smuggling via
         // trailing bytes on a valid-looking hex prefix.
         assert.match(css, /--sn-disabled-rgb: 128, 128, 128;/);
-        assert.ok(
-            !css.includes('background: red'),
-            'hex parse must not preserve trailing attacker payload'
-        );
+        assert.ok(!css.includes('background: red'), 'hex parse must not preserve trailing attacker payload');
     });
 
     test('rejects unicode null-byte smuggling', () => {

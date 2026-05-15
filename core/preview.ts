@@ -8,8 +8,20 @@
 import type { SpatialNavState } from './state';
 import type { Direction, DirectionMap } from './config';
 import type { NavigationCandidate, ScoringOptions } from './scoring';
+import { calculateVisualRect } from './geometry';
 
 const previewDirectionKeys = ['up', 'down', 'left', 'right'] as const;
+
+/**
+ * Constant gap (in CSS pixels) between the focus ring's outer edge and
+ * the chevron's near edge. Matches the default `outline-width (3) +
+ * outline-offset (3) + 8` of breathing room, so the chevron renders at
+ * roughly the same visible distance from the ring across all focused
+ * elements regardless of their size. Previously this was proportional
+ * to chevron size, which produced visibly inconsistent gaps (tighter on
+ * small buttons, wider on large images).
+ */
+const CHEVRON_RING_GAP = 14;
 type PreviewDirection = (typeof previewDirectionKeys)[number];
 
 interface PreviewElement {
@@ -98,7 +110,9 @@ function showDisabledPreview(entry: PreviewElement, direction: string, currentRe
         16,
         Math.min(32, Math.round(Math.min(currentRect.width, currentRect.height) * 0.35))
     );
-    const offset = Math.max(8, Math.round(size * 0.6));
+    // Constant gap from the ring, matching `showChevronPreview` so the
+    // disabled-state preview animates from the same distance.
+    const offset = CHEVRON_RING_GAP;
     let left = currentRect.left;
     let top = currentRect.top;
 
@@ -135,10 +149,6 @@ function showDisabledPreview(entry: PreviewElement, direction: string, currentRe
     }
 }
 
-function clamp(value: number, min: number, max: number): number {
-    return Math.min(Math.max(value, min), max);
-}
-
 function showChevronPreview(
     entry: PreviewElement,
     direction: string,
@@ -153,7 +163,16 @@ function showChevronPreview(
         14,
         Math.min(26, Math.round(Math.min(currentRect.width, currentRect.height) * 0.28))
     );
-    const offset = Math.max(10, Math.round(size * 0.75));
+    // Constant chevron-to-ring gap regardless of focused-element size.
+    // The previous `offset = max(10, round(size * 0.75))` formula scaled
+    // the gap with chevron size, so a small button got a ~11px gap and
+    // a large image got a ~17px gap — visually inconsistent (most
+    // noticeable on the Dart logo: its ring uses the 200×80 image rect
+    // → larger chevron → wider gap; adjacent small links had a tight
+    // gap). A constant offset matches the ring's own outline extent
+    // (outline width + outline-offset) so the chevron always appears
+    // the same fixed distance outside the ring.
+    const offset = CHEVRON_RING_GAP;
 
     let left = currentRect.left;
     let top = currentRect.top;
@@ -181,9 +200,42 @@ function showChevronPreview(
 
     const viewportW = window?.innerWidth ?? 0;
     const viewportH = window?.innerHeight ?? 0;
-    const safe = Math.max(0, safeAreaMargin || 0);
-    left = clamp(left, safe, Math.max(safe, viewportW - safe - size));
-    top = clamp(top, safe, Math.max(safe, viewportH - safe - size));
+
+    // The chevron's viewport-hide threshold is derived from the ring's
+    // own geometry (`outlineExtent + CHEVRON_RING_GAP`) rather than
+    // `safeAreaMargin`. Rationale: `safeAreaMargin` historically meant
+    // "the ring stays this far from the viewport edge", but as of the
+    // Bug-2 fix the ring is allowed to extend to within `-outlineExtent`
+    // of the edge. Using `safeAreaMargin` for chevron clearance would
+    // create an inconsistency where the ring can paint at the edge but
+    // the chevron is required to stay 12px in. Use a small fixed
+    // viewport padding so the chevron has breathing room without
+    // depending on a knob that's been retired for ring sizing.
+    //
+    // `safeAreaMargin` is still consumed by `updateFocusLabel` (the
+    // floating debug-label inset). If you want to push the chevron
+    // further from the edge, raise `CHEVRON_RING_GAP`.
+    //
+    // Previously this block clamped the chevron INTO `safeAreaMargin`,
+    // which on edge-flush content placed the chevron ON TOP of the
+    // focused content. The hide-instead-of-clamp behaviour below stays;
+    // only the threshold changed.
+    void safeAreaMargin; // kept in signature for back-compat, no longer used here
+    const CHEVRON_VIEWPORT_PAD = 4;
+    const fitsHorizontally = left >= CHEVRON_VIEWPORT_PAD && left + size <= viewportW - CHEVRON_VIEWPORT_PAD;
+    const fitsVertically = top >= CHEVRON_VIEWPORT_PAD && top + size <= viewportH - CHEVRON_VIEWPORT_PAD;
+    if (!fitsHorizontally || !fitsVertically) {
+        entry.container.style.left = '';
+        entry.container.style.top = '';
+        entry.container.style.width = '';
+        entry.container.style.height = '';
+        entry.container.style.opacity = '';
+        entry.container.className = 'focus-preview focus-preview-' + direction;
+        if (entry.arrow) {
+            entry.arrow.style.display = '';
+        }
+        return;
+    }
 
     entry.container.style.left = left + 'px';
     entry.container.style.top = top + 'px';
@@ -276,9 +328,42 @@ export function updatePreviewTargets(
         state.nextTargets = result;
         return result;
     }
+    // When `boundaryScrollBehavior` is `'scroll'`, a vertical press that
+    // hits the boundary triggers `window.scrollBy` — the press IS
+    // actionable even with no in-viewport candidate. Show the chevron in
+    // that case so the user has a hint of the scroll affordance.
+    // Horizontal directions stay strict (no horizontal scroll-on-boundary).
+    const scrollOnBoundary = state.config.boundaryScrollBehavior === 'scroll';
+
     previewDirectionKeys.forEach(function (direction) {
         const dir = directionByName[direction];
-        result[direction] = findDirectionalCandidate(currentIndex, dir, state);
+        const candidate = findDirectionalCandidate(currentIndex, dir, state);
+        // Drop pass-(-1) (wrap-around) — surprising teleport across
+        // the page, never represent as a chevron.
+        if (candidate && candidate.passIndex === -1) {
+            result[direction] = null;
+            return;
+        }
+        // Drop pass-2 ("wide-net, requireViewport:false") chevrons UNLESS
+        // (a) `boundaryScrollBehavior` is `'scroll'` AND (b) direction is
+        // vertical — in which case the press will scroll the viewport
+        // toward the target. Without (a)+(b), pass-2 chevrons would
+        // mislead: they'd point to off-screen targets that the move path
+        // could reach but the user wouldn't visually expect.
+        //
+        // Rationale: the move path (handleKeyDown → moveInDirection) calls
+        // findDirectionalCandidate directly without this filter, so it can
+        // STILL reach those wide-net targets when the user presses an arrow.
+        // Filtering at the preview layer (not the move layer) keeps the
+        // chevrons honest about close-by reachable targets.
+        if (candidate && candidate.passIndex === 2) {
+            const isVerticalScroll = scrollOnBoundary && (direction === 'up' || direction === 'down');
+            if (!isVerticalScroll) {
+                result[direction] = null;
+                return;
+            }
+        }
+        result[direction] = candidate;
     });
     state.nextTargets = result;
     return result;
@@ -313,11 +398,30 @@ export function updatePreviewVisuals(
         return;
     }
 
-    // Unused but kept for API compatibility or future use
-    const _rect =
-        currentRect && typeof currentRect.left === 'number'
-            ? currentRect
-            : currentElement.getBoundingClientRect();
+    // CRITICAL: chevrons must be positioned against the SAME rect that
+    // the focus ring uses — the visual rect from `calculateVisualRect`.
+    // The ring expands to cover overflowing images (logos, image-buttons)
+    // and shrinks to fit the dominant image inside a wrapper. Using
+    // `getBoundingClientRect()` here previously produced two visible
+    // bugs:
+    //
+    //   - Dart-logo class: focused `<a>` had a small (24×24) hit area
+    //     but the `<img>` inside was 200×80. Ring rendered around the
+    //     200×80 image; chevron positioned against the 24×24 hit area
+    //     landed bottom-right of the ring instead of vertically centred.
+    //   - "Chevron sometimes still inside the ring at edges": the
+    //     `fitsHorizontally/Vertically` check in `showChevronPreview`
+    //     used the smaller rect to compute "is there room outside?".
+    //     The ring's actual extent was larger, so chevrons that fit
+    //     outside the smaller rect ended up inside the larger ring.
+    //
+    // We unconditionally use the visual rect. The `currentRect`
+    // parameter is retained for API compatibility but ignored —
+    // callers who construct a rect manually are out of luck, but no
+    // production caller does so; all paths flow from the focused
+    // element which `calculateVisualRect` can reconstruct.
+    void currentRect;
+    const _rect = calculateVisualRect(currentElement);
 
     const targets = updatePreviewTargets(
         state.currentIndex,

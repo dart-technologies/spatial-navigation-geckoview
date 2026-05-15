@@ -1,6 +1,6 @@
 # Spatial Navigation for GeckoView
 
-[![Version](https://img.shields.io/badge/version-3.0.1-blue.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview)
+[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml/badge.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@dart-technologies/spatial-navigation-geckoview)](https://github.com/dart-technologies/spatial-navigation-geckoview/packages)
@@ -25,6 +25,10 @@ A GeckoView web extension providing **WICG-compatible spatial navigation** for A
 
 ### Advanced Features
 
+- ✅ **Input modality awareness** _(3.1+)_ - Detects touch vs hardware-nav; posts `inputModalityChange` to the native host on transitions
+- ✅ **Configurable boundary behavior** _(3.1+)_ - Scroll container on boundary by default; opt into `focusExit` or no-op
+- ✅ **Visual-rect accuracy** _(3.1+)_ - Focus ring fits dominant media children, expands for overflowing logos, clips to ancestor `overflow: hidden`
+- ✅ **Hardware-nav-only overlay mode** _(3.1+)_ - Hide the focus ring until the user starts D-pad navigation
 - ✅ **Shadow DOM traversal** - Works with Web Components (Shoelace, Material Web)
 - ✅ **Virtual scroll detection** - Automatic refresh for React Virtualized, YouTube, Twitter
 - ✅ **Focus trap detection** - Handles modals/dialogs with escape affordances
@@ -187,20 +191,23 @@ All options can be set via `window.spatialNavConfig`:
 
 ### Visual Options
 
-| Option                | Type    | Default           | Description                                      |
-| --------------------- | ------- | ----------------- | ------------------------------------------------ |
-| `color`               | string  | `'#1565C0'`       | Focus highlight color (blue 800, WCAG-compliant) |
-| `outlineWidth`        | number  | `3`               | Outline width in CSS pixels                      |
-| `outlineOffset`       | number  | `3`               | Outline offset in CSS pixels                     |
-| `overlayZIndex`       | number  | `2147483646`      | Overlay z-index                                  |
-| `arrowScale`          | number  | `1.0`             | Directional chevron scale                        |
-| `disabledColor`       | string  | `'128, 128, 128'` | Disabled/boundary indicator RGB string           |
-| `overlayTheme`        | string  | `'default'`       | `'default'` or `'high-contrast'` preset          |
-| `safeAreaMargin`      | number  | `12`              | Safe-area/overscan margin in CSS pixels          |
-| `overlayScrimOpacity` | number  | `0.06`            | Inner scrim opacity (0–1)                        |
-| `overlayGlowOpacity`  | number  | `0.35`            | Outer glow opacity (0–1)                         |
-| `overlayGlowBlur`     | number  | `14`              | Outer glow blur radius in CSS pixels             |
-| `autoRefocus`         | boolean | `true`            | Recover focus when lost                          |
+| Option                    | Type    | Default           | Description                                      |
+| ------------------------- | ------- | ----------------- | ------------------------------------------------ |
+| `color`                   | string  | `'#1565C0'`       | Focus highlight color (blue 800, WCAG-compliant) |
+| `outlineWidth`            | number  | `3`               | Outline width in CSS pixels                      |
+| `outlineOffset`           | number  | `3`               | Outline offset in CSS pixels                     |
+| `overlayZIndex`           | number  | `2147483646`      | Overlay z-index                                  |
+| `arrowScale`              | number  | `1.0`             | Directional chevron scale                        |
+| `disabledColor`           | string  | `'128, 128, 128'` | Disabled/boundary indicator RGB string           |
+| `overlayTheme`            | string  | `'default'`       | `'default'` or `'high-contrast'` preset          |
+| `safeAreaMargin`          | number  | `12`              | Safe-area/overscan margin in CSS pixels          |
+| `overlayScrimOpacity`     | number  | `0.06`            | Inner scrim opacity (0–1)                        |
+| `overlayGlowOpacity`      | number  | `0.35`            | Outer glow opacity (0–1)                         |
+| `overlayInnerGlowOpacity` | number  | `0.16`            | Inner glow opacity (0–1) _(3.1+)_                |
+| `overlayGlowBlur`         | number  | `14`              | Outer glow blur radius in CSS pixels             |
+| `enableFocusPulse`        | boolean | `false`           | Pulse animation on focus change _(3.1+)_         |
+| `visibilityMode`          | string  | `'always'`        | `'always'` or `'hardware-nav-only'` _(3.1+)_     |
+| `autoRefocus`             | boolean | `true`            | Recover focus when lost                          |
 
 ### Observation Options
 
@@ -223,29 +230,53 @@ All options can be set via `window.spatialNavConfig`:
 | `overlapThreshold`       | number  | `0`           | Pixels of overlap allowed (BBC LRUD)                  |
 | `gridAlignmentTolerance` | number  | `20`          | Pixels tolerance for grid alignment                   |
 | `wrapNavigation`         | boolean | `false`       | Wrap focus at container boundaries                    |
+| `boundaryScrollBehavior` | string  | `'scroll'`    | `'scroll'`, `'exit'`, `'none'` _(3.1+)_               |
 | `useCSSProperties`       | boolean | `true`        | Read `--spatial-navigation-*` CSS                     |
 
 For the underlying score formula and weight hierarchy, see [`docs/SCORING.md`](docs/SCORING.md).
 Inputs are validated against a schema — malformed values are dropped with a warning rather than silently corrupting state.
 
-#### Safe-range clamping (3.0.1+)
+#### Safe-range clamping (3.0.1+, extended in 3.1.0)
 
-Numeric visual-styling options are clamped to safe ranges at config read time. Out-of-range values are corrected to the nearest bound. This stops a malicious config from making the overlay invisible, off-screen, or paint-thread-prohibitive.
+Every numeric config value is clamped to a safe range at config read time. Out-of-range values are corrected to the nearest bound. This stops a malicious config from making the overlay invisible, off-screen, or paint-thread-prohibitive, or from setting observer debounces / cache timeouts to hostile extremes.
 
-| Option                | Min   | Max          | Default      |
-| --------------------- | ----- | ------------ | ------------ |
-| `outlineWidth`        | `1`   | `20`         | `3`          |
-| `outlineOffset`       | `0`   | `50`         | `3`          |
-| `overlayZIndex`       | `1`   | `2147483646` | `2147483646` |
-| `arrowScale`          | `0.1` | `4`          | `1.0`        |
-| `safeAreaMargin`      | `0`   | `200`        | `12`         |
-| `overlayScrimOpacity` | `0`   | `1`          | `0.06`       |
-| `overlayGlowOpacity`  | `0`   | `1`          | `0.35`       |
-| `overlayGlowBlur`     | `0`   | `64`         | `14`         |
+**Visual styling**
+
+| Option                    | Min   | Max          | Default      |
+| ------------------------- | ----- | ------------ | ------------ |
+| `outlineWidth`            | `1`   | `20`         | `3`          |
+| `outlineOffset`           | `0`   | `50`         | `3`          |
+| `overlayZIndex`           | `1`   | `2147483646` | `2147483646` |
+| `arrowScale`              | `0.1` | `4`          | `1.0`        |
+| `safeAreaMargin`          | `0`   | `200`        | `12`         |
+| `overlayScrimOpacity`     | `0`   | `1`          | `0.06`       |
+| `overlayGlowOpacity`      | `0`   | `1`          | `0.35`       |
+| `overlayGlowBlur`         | `0`   | `64`         | `14`         |
+| `overlayInnerGlowOpacity` | `0`   | `1`          | `0.16`       |
+
+**Observers and timers** _(3.1+)_
+
+| Option                   | Min | Max     | Default |
+| ------------------------ | --- | ------- | ------- |
+| `mutationDebounce`       | `0` | `5000`  | `100`   |
+| `scrollThreshold`        | `0` | `1000`  | `8`     |
+| `virtualScrollDebounce`  | `0` | `5000`  | `150`   |
+| `precomputeCacheTimeout` | `0` | `60000` | `500`   |
+| `intersectionThreshold`  | `0` | `1`     | `0`     |
+
+**Scoring** _(3.1+)_
+
+| Option                   | Min | Max    | Default |
+| ------------------------ | --- | ------ | ------- |
+| `overlapThreshold`       | `0` | `4096` | `0`     |
+| `gridAlignmentTolerance` | `0` | `4096` | `20`    |
+| `minElementSize`         | `0` | `4096` | `1`     |
 
 `color` and `disabledColor` are validated against an allowlist of CSS color syntaxes (`#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `hsl()`, `hsla()`, named colors) by the same `parseColor()` validator. Strings that don't match the allowlist fall back to the default — they cannot inject arbitrary CSS into the shadow-DOM `:host` block.
 
 `virtualContainerSelectors` is capped at **32 entries**; each entry is capped at **256 characters**. Excess entries are dropped with a warning. This prevents DoS via a config that supplies millions of selectors to `document.querySelectorAll`.
+
+`iframeSupport` and `focusGroups` nested objects are field-validated _(3.1+)_: unknown keys are dropped, `focusMethod`/`boundaryBehavior` enums are checked against allowlists, and only plain objects (no Arrays, no `null` prototypes) are accepted.
 
 ### Focus Group Options
 
@@ -291,11 +322,12 @@ document.addEventListener('spatialNavigationExit', (e) => {
 
 ### Messages from Extension → Native
 
-| Type             | Payload                                 | Description           |
-| ---------------- | --------------------------------------- | --------------------- |
-| `spatialNavInit` | `{ url, version }`                      | Extension initialized |
-| `focusChange`    | `{ direction, fromElement, toElement }` | Focus moved           |
-| `focusExit`      | `{ direction, inTrap }`                 | Reached boundary      |
+| Type                  | Payload                                            | Description                                              |
+| --------------------- | -------------------------------------------------- | -------------------------------------------------------- |
+| `spatialNavInit`      | `{ url, version }`                                 | Extension initialized                                    |
+| `focusChange`         | `{ direction, fromElement, toElement }`            | Focus moved                                              |
+| `focusExit`           | `{ direction, inTrap }`                            | Reached boundary (when `boundaryScrollBehavior: 'exit'`) |
+| `inputModalityChange` | `{ modality: 'touch' \| 'hardware-nav' }` _(3.1+)_ | User switched between touch and D-pad                    |
 
 ### Messages from Native → Extension
 
@@ -358,7 +390,10 @@ npm run docs               # Generate TypeDoc
 
 ## Migration
 
-Upgrading from a previous version? See [`docs/MIGRATION.md`](docs/MIGRATION.md) for the v3.0.0 → v3.0.1 behavior changes (debug-by-default removed, focus color changed for WCAG contrast, deprecation warnings on `flutter*` aliases, and the 3.0.1 security hardening defaults).
+Upgrading from a previous version? See [`docs/MIGRATION.md`](docs/MIGRATION.md) for:
+
+- **v3.0.0 → v3.0.1** — debug-by-default removed, focus color changed for WCAG contrast, deprecation warnings on `flutter*` aliases, eight security hardening defaults.
+- **v3.0.1 → v3.1.0** — new `inputModalityChange` message, `boundaryScrollBehavior` default changed to `'scroll'`, optional `visibilityMode: 'hardware-nav-only'`.
 
 ## Security
 

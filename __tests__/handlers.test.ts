@@ -266,6 +266,79 @@ describe('handleKeyDown: defensive guards', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Modality tracking (Phase C M-1)
+// ---------------------------------------------------------------------------
+
+describe('handleKeyDown: lastReportedModality tracking', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => {
+        removeBrowserBridge();
+        teardownDomEnv();
+    });
+
+    test('Enter sets lastReportedModality to hardware-nav', () => {
+        const el = attachElement(
+            createElement({ tagName: 'button', rect: { x: 0, y: 0, width: 50, height: 30 } })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+        installBrowserBridge();
+
+        const state = createTestState([el], {
+            handlerId: 1,
+            lastReportedModality: 'touch',
+        });
+
+        handleKeyDown(createKeyboardEvent({ key: 'Enter', timeStamp: 11 }), state);
+
+        assert.equal(
+            state.lastReportedModality,
+            'hardware-nav',
+            'Enter is hardware-nav input — pointer watcher should next see a transition on real touch'
+        );
+    });
+
+    test('Arrow key sets lastReportedModality to hardware-nav', () => {
+        const el = attachElement(
+            createElement({ tagName: 'button', rect: { x: 0, y: 0, width: 50, height: 30 } })
+        );
+        const el2 = attachElement(
+            createElement({ tagName: 'button', rect: { x: 0, y: 60, width: 50, height: 30 } })
+        );
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+
+        const state = createTestState([el, el2], {
+            handlerId: 1,
+            lastReportedModality: 'touch',
+        });
+
+        handleKeyDown(createKeyboardEvent({ key: 'ArrowDown', timeStamp: 22 }), state);
+
+        assert.equal(state.lastReportedModality, 'hardware-nav');
+    });
+
+    test('non-directional key does NOT flip lastReportedModality', () => {
+        const el = attachElement(createElement({ tagName: 'button' }));
+        setActiveElement(el);
+        setRootAttr('data-spatnav-handler-id', '1');
+
+        const state = createTestState([el], {
+            handlerId: 1,
+            lastReportedModality: 'touch',
+        });
+
+        handleKeyDown(createKeyboardEvent({ key: 'a', timeStamp: 33 }), state);
+
+        assert.equal(
+            state.lastReportedModality,
+            'touch',
+            'plain letter keys are not navigation — modality should not change'
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Editable element bypass
 // ---------------------------------------------------------------------------
 

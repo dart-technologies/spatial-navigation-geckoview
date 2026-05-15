@@ -13,6 +13,7 @@ export type OutboundMessageType =
     | 'spatialNavInit'
     | 'focusChange'
     | 'focusExit'
+    | 'inputModalityChange'
     | 'tabClosed'
     | 'extensionInstalled'
     | 'extensionUpdated';
@@ -61,6 +62,20 @@ export interface FocusExitMessage extends OutboundMessage {
     type: 'focusExit';
     direction: DirectionName;
     inTrap?: boolean;
+}
+
+/**
+ * Input modality change message sent when the user switches between
+ * touch and hardware-nav (D-pad / arrow keys / rotary) input.
+ *
+ * Hosts use this to gate the focus-ring overlay's visibility: in touch
+ * mode the ring is hidden, in hardware-nav mode it is shown. The
+ * extension throttles emission to actual transitions — successive
+ * pointer events in the same modality do not produce repeat messages.
+ */
+export interface InputModalityChangeMessage extends OutboundMessage {
+    type: 'inputModalityChange';
+    modality: 'touch' | 'hardware-nav';
 }
 
 /**

@@ -36,17 +36,18 @@ function warnOnce(name: string, replacement: string): void {
  * embedded browsers do not allow it on `window`).
  */
 function defineLegacyAlias<T>(name: string, replacement: string, value: T): void {
+    let currentValue: T = value;
     try {
         Object.defineProperty(window, name, {
             configurable: true,
             enumerable: true,
             get: () => {
                 warnOnce(name, replacement);
-                return value;
+                return currentValue;
             },
             set: (v: T) => {
                 warnOnce(name, replacement);
-                (window as unknown as Record<string, unknown>)[`__${name}_value`] = v;
+                currentValue = v;
             },
         });
     } catch {

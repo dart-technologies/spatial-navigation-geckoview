@@ -17,7 +17,7 @@
     "rootDir": ".",
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
-    "noEmit": true,
+    "noEmit": false,
     "noUnusedLocals": true,
     "noUnusedParameters": false,
     "noImplicitReturns": true,

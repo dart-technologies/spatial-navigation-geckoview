@@ -24,6 +24,17 @@ const log = createLogger('Focus');
  */
 export function scheduleOverlayUpdate(target: HTMLElement, state: SpatialNavState): void {
     if (state.overlaySuppressed) {
+        // [diag] If "ring vanished" coincides with this branch firing,
+        // the bug is upstream — someone set `overlaySuppressed = true`
+        // before scroll-tracking could re-position. Cross-reference the
+        // adjacent "suppressOverlay(reason=...)" log to identify the
+        // culprit.
+        // Promoted to log.warn so prod traces show when scheduleOverlayUpdate
+        // is gated (this is THE smoking-gun signal for "ring should be
+        // visible but isn`t" reports).
+        log.warn(
+            `scheduleOverlayUpdate: SKIPPED — overlaySuppressed=true target=${target ? target.tagName.toLowerCase() : '(null)'}`
+        );
         // Ensure no pending overlay update re-shows the overlay after an exit.
         if (state.updateTimer) {
             cancelAnimationFrame(state.updateTimer);
@@ -113,5 +124,30 @@ export function clearPendingOverlayUpdate(state: SpatialNavState): void {
     if (state.updateTimer) {
         cancelAnimationFrame(state.updateTimer);
         state.updateTimer = null;
+    }
+}
+
+/**
+ * Atomically clear `overlaySuppressed` AND any pending auto-recover timer.
+ *
+ * Centralizes the cleanup that the four ad-hoc clear sites used to
+ * duplicate (with subtly different completeness): the moveInDirection
+ * entry point, the auto-recover timer callback, the
+ * `spatnav-clear-suppress` event listener, and the
+ * `spatnav-engage-overlay` event listener. The latter two cancelled the
+ * pending timer; the former two did not. If a new
+ * `spatialNavigationExit` auto-recover is pending and the user
+ * successfully D-pads to a new target (movement.ts:247), the orphan
+ * timer would fire 350ms later, observe `!overlaySuppressed`, and
+ * harmlessly bail — but on a subsequent suppression race it could
+ * resurrect a stale state. One helper, one invariant.
+ *
+ * @param state - Global state object
+ */
+export function clearOverlaySuppression(state: SpatialNavState): void {
+    state.overlaySuppressed = false;
+    if (state.suppressRecoveryTimer != null) {
+        clearTimeout(state.suppressRecoveryTimer);
+        state.suppressRecoveryTimer = null;
     }
 }

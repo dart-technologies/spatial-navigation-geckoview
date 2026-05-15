@@ -1,6 +1,6 @@
 {
   "name": "@dart-technologies/spatial-navigation-geckoview",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "description": "GeckoView web extension for D-pad/arrow key spatial navigation with WICG compatibility",
   "main": "dist/spatial-navigation.js",
   "module": "dist/spatial-navigation.esm.js",
@@ -32,8 +32,12 @@
   "files": [
     "dist/",
     "extension/",
+    "docs/",
     "README.md",
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "RELEASING.md",
     "LICENSE"
   ],
   "scripts": {
@@ -101,7 +105,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
