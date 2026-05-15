@@ -5,9 +5,22 @@ All notable changes to the Spatial Navigation for GeckoView extension will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.1] — Unreleased
+## [3.0.1] — 2026-05-15
 
-A hygiene + hardening release. No public API changes; default behavior shifts noted under **Behavior changes**.
+A hygiene + security hardening release. No public API changes; default behavior shifts noted under **Behavior changes**. Bundled eight security fixes after the initial hygiene work — see **Security** below.
+
+### Security
+
+Eight hardening fixes addressing CSS injection, DoS, prototype pollution, telemetry exfiltration, and info-disclosure surfaces. All fixes are server- and client-side compatible with existing v3.0.0 deployments — no API or configuration changes required.
+
+- **`d23e1ab`** — Pin native-messaging app id to `spatial_navigation_native`; strip `nativeAppId` from user-supplied config. Prevents a hostile page from rerouting telemetry to an attacker-controlled native messaging host.
+- **`48ace4b`** — Remove `spatial_navigation.debug.js` from `web_accessible_resources` in `manifest.json`. The debug bundle exposed the extension UUID and debug bundle source on `moz-extension://<uuid>/spatial_navigation.debug.js`, allowing fingerprinting and easier reverse-engineering.
+- **`cf0c889`** — Validate `disabledColor` config value against an explicit color-syntax allowlist (`#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `hsl()`, `hsla()`, named colors). Stops shadow-DOM CSS injection via crafted strings like `red; --x: url(http://attacker)`.
+- **`89faa8c`** — Stop reading `window.spatialNavState` back into the module. State is now a module-private singleton; `window.spatialNavState` is publish-only (for debugging/legacy compatibility). Prevents a page that pre-populates `window.spatialNavState` from hijacking the overlay target or focusables list.
+- **`fb92346`** — Clamp all numeric config values (`overlapThreshold`, `gridAlignmentTolerance`, `outlineWidth`, `overlayZIndex`, `boundaryDebounceMs`, `virtualScrollDebounceMs`, etc.) to safe ranges via `NUMBER_RANGES` in `core/config.ts`. Prevents DoS via extreme values (e.g., `overlayZIndex: 2^53` or `overlapThreshold: -Infinity`).
+- **`810b97d`** — Convert direction-name lookup tables (`DIRECTION_BY_NAME`, `OPPOSITE_DIRECTION`) to `Object.create(null)` + `Object.freeze`. Closes a prototype-pollution attack surface where `Object.prototype.constructor` lookups could be hijacked.
+- **`d25d69f`** — Gate the runtime `SPATIAL_NAV_DEBUG` / `flutterSpatialNavDebug` flag behind build-time `DEBUG`. Production bundles now ignore the runtime flag entirely; only `spatial_navigation.debug.js` honors it. Stops info-disclosure of focus geometry, candidate selection internals, and timing data on production deployments.
+- **`ae9562e`** — Cap `virtualContainerSelectors` array length to 32 entries and each entry length to 256 chars. Prevents DoS via a malicious config that supplies millions of selectors to `document.querySelectorAll`.
 
 ### Behavior changes (review before upgrading)
 

@@ -59,6 +59,46 @@ implementation that targeted `#spatnav-focus-host`), migrate to listening to
 the `navbeforefocus` / `focus` events on the actual focused elements
 instead.
 
+#### 4. Security hardening defaults
+
+v3.0.1 bundled eight security fixes (see [`CHANGELOG.md`](../CHANGELOG.md#301--2026-05-15)
+for the full list). The behavior shifts visible to integrators:
+
+- **`nativeAppId` is no longer settable from user config.** The native-messaging
+  host id is now pinned to `spatial_navigation_native`. If you were setting
+  `window.spatialNavConfig.nativeAppId`, the value is silently dropped at
+  validation time. Repackage the extension with the correct manifest if you
+  need a different native host id.
+- **`disabledColor` is now strictly validated.** Strings that aren't a
+  recognized CSS color (`#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `hsl()`,
+  `hsla()`, named colors) fall back to the `'128, 128, 128'` default. Strings
+  like `"red; --x: url(http://attacker)"` no longer reach the shadow-DOM
+  stylesheet. Same validator runs on `color`.
+- **Numeric config values are clamped to safe ranges.** See the
+  [Safe-range clamping table in README](../README.md#safe-range-clamping-301).
+  Most consumers will not notice — the bounds are generous (e.g., `outlineWidth`
+  is `1..20`, `safeAreaMargin` is `0..200`). Values outside the range are
+  corrected to the nearest bound; a warning is logged.
+- **`virtualContainerSelectors` is capped** at 32 entries × 256 chars each.
+  If your config supplies more, the surplus is truncated with a warning.
+- **`spatial_navigation.debug.js` no longer ships in the extension package**
+  via `web_accessible_resources`. The debug bundle is still in the npm
+  tarball under `extension/spatial_navigation.debug.js`, but it cannot be
+  loaded from `moz-extension://<uuid>/...` URLs in the browser. To run with
+  debug logging, replace `content_scripts[0].js` in your `manifest.json`
+  with the debug bundle path during development.
+- **The runtime `SPATIAL_NAV_DEBUG` flag is build-time gated.** Setting
+  `window.SPATIAL_NAV_DEBUG = true` has no effect on the production bundle —
+  the conditional is removed at minify time. Load the debug bundle if you
+  need verbose logs.
+- **`window.spatialNavState` is publish-only** — the module no longer reads
+  it back. If a page pre-populates `window.spatialNavState` before the
+  content script runs, it cannot hijack the extension's internal state.
+  Consumers that rely on reading the state object are unaffected.
+- **Direction lookup tables are frozen** (`DIRECTION_BY_NAME`,
+  `OPPOSITE_DIRECTION`). Mutating these is no longer possible from page
+  scope. No public surface change.
+
 ### Soft deprecations
 
 These names still work but log a one-time warning. They will be removed

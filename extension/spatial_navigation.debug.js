@@ -530,7 +530,7 @@
         window.flutterFocusState = state;
         // Core navigation state
         state.config = config;
-        state.version = '3.0.0';
+        state.version = '3.0.1';
         state.currentIndex = typeof state.currentIndex === 'number' ? state.currentIndex : -1;
         state.initialized = !!state.initialized;
         state.handlersAttached = !!state.handlersAttached;
@@ -5580,7 +5580,7 @@ body *:focus, body *:focus-visible {
     const log = createLogger('Main');
     const STYLE_ID = 'spatnav-focus-styles';
     const OVERLAY_HOST_ID = 'spatnav-focus-host';
-    const VERSION = '3.0.0';
+    const VERSION = '3.0.1';
     // Debounce window for the pageshow re-init handler. Below this threshold we
     // treat consecutive events as the same logical navigation.
     const PAGESHOW_DEBOUNCE_MS = 100;

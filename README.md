@@ -1,6 +1,6 @@
 # Spatial Navigation for GeckoView
 
-[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview)
+[![Version](https://img.shields.io/badge/version-3.0.1-blue.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml/badge.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@dart-technologies/spatial-navigation-geckoview)](https://github.com/dart-technologies/spatial-navigation-geckoview/packages)
@@ -30,7 +30,7 @@ A GeckoView web extension providing **WICG-compatible spatial navigation** for A
 - ✅ **Focus trap detection** - Handles modals/dialogs with escape affordances
 - ✅ **ARIA accessibility** - Optional live region announcements
 - ✅ **Framework-aware refresh** - Deferred updates for React/Vue/Angular
-- ✅ **Strict TypeScript** - Fully typed codebase with `noImplicitAny: true`
+- ✅ **Strict TypeScript** - Fully typed codebase with `strict: true`
 - ✅ **Performance** - <5ms navigation latency (benchmarked for 1000+ elements)
 
 ## Installation
@@ -228,6 +228,25 @@ All options can be set via `window.spatialNavConfig`:
 For the underlying score formula and weight hierarchy, see [`docs/SCORING.md`](docs/SCORING.md).
 Inputs are validated against a schema — malformed values are dropped with a warning rather than silently corrupting state.
 
+#### Safe-range clamping (3.0.1+)
+
+Numeric visual-styling options are clamped to safe ranges at config read time. Out-of-range values are corrected to the nearest bound. This stops a malicious config from making the overlay invisible, off-screen, or paint-thread-prohibitive.
+
+| Option                | Min   | Max          | Default      |
+| --------------------- | ----- | ------------ | ------------ |
+| `outlineWidth`        | `1`   | `20`         | `3`          |
+| `outlineOffset`       | `0`   | `50`         | `3`          |
+| `overlayZIndex`       | `1`   | `2147483646` | `2147483646` |
+| `arrowScale`          | `0.1` | `4`          | `1.0`        |
+| `safeAreaMargin`      | `0`   | `200`        | `12`         |
+| `overlayScrimOpacity` | `0`   | `1`          | `0.06`       |
+| `overlayGlowOpacity`  | `0`   | `1`          | `0.35`       |
+| `overlayGlowBlur`     | `0`   | `64`         | `14`         |
+
+`color` and `disabledColor` are validated against an allowlist of CSS color syntaxes (`#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `hsl()`, `hsla()`, named colors) by the same `parseColor()` validator. Strings that don't match the allowlist fall back to the default — they cannot inject arbitrary CSS into the shadow-DOM `:host` block.
+
+`virtualContainerSelectors` is capped at **32 entries**; each entry is capped at **256 characters**. Excess entries are dropped with a warning. This prevents DoS via a config that supplies millions of selectors to `document.querySelectorAll`.
+
 ### Focus Group Options
 
 ```html
@@ -337,11 +356,13 @@ npm run docs               # Generate TypeDoc
 | `dist/messaging.js` / `dist/messaging.esm.js` | UMD/ESM | ~5KB   | Messaging adapters only                     |
 | `dist/background.js`                          | IIFE    | ~2KB   | WebExtension background relay               |
 
-## Comparison with Other Libraries
-
 ## Migration
 
-Upgrading from a previous version? See [`docs/MIGRATION.md`](docs/MIGRATION.md) for the v3.0.0 → v3.0.1 behavior changes (debug-by-default removed, focus color changed for WCAG contrast, deprecation warnings on `flutter*` aliases).
+Upgrading from a previous version? See [`docs/MIGRATION.md`](docs/MIGRATION.md) for the v3.0.0 → v3.0.1 behavior changes (debug-by-default removed, focus color changed for WCAG contrast, deprecation warnings on `flutter*` aliases, and the 3.0.1 security hardening defaults).
+
+## Security
+
+To report a vulnerability, see [`SECURITY.md`](SECURITY.md). v3.0.1 ships eight security hardening fixes — see the [3.0.1 changelog entry](CHANGELOG.md#301--2026-05-15) for the full list.
 
 ## Architecture
 
