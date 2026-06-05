@@ -1,0 +1,71 @@
+name: API docs
+
+# Builds the TypeDoc API reference and publishes it to GitHub Pages.
+# Requires Pages to be enabled with "GitHub Actions" as the source
+# (Settings -> Pages -> Build and deployment -> Source). The first run
+# attempts to enable it automatically via `enablement: true` below.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'main.ts'
+      - 'core/**'
+      - 'messaging/**'
+      - 'navigation/**'
+      - 'utils/**'
+      - 'globals.d.ts'
+      - 'README.md'
+      - 'typedoc.json'
+      - 'tsconfig.json'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# Least privilege: only the deploy job widens this (see below).
+permissions:
+  contents: read
+
+# Allow one concurrent deployment; let an in-flight deploy finish rather
+# than cancelling it (a half-published Pages site is worse than a stale one).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build TypeDoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: 'npm'
+      - run: npm ci
+      - name: Generate API docs
+        run: npm run docs
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/api
+
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # deploy to Pages
+      id-token: write # OIDC token the deploy-pages action verifies
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

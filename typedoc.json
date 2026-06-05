@@ -10,6 +10,20 @@
   "excludeProtected": false,
   "excludeInternal": false,
   "categorizeByGroup": true,
+  "highlightLanguages": [
+    "bash",
+    "console",
+    "css",
+    "html",
+    "javascript",
+    "json",
+    "jsonc",
+    "json5",
+    "yaml",
+    "tsx",
+    "typescript",
+    "kotlin"
+  ],
   "navigationLinks": {
     "GitHub": "https://github.com/dart-technologies/spatial-navigation-geckoview",
     "CHANGELOG": "https://github.com/dart-technologies/spatial-navigation-geckoview/blob/main/CHANGELOG.md"

@@ -5,6 +5,7 @@
 [![CI](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml/badge.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/dart-technologies/spatial-navigation-geckoview/badge)](https://scorecard.dev/viewer/?uri=github.com/dart-technologies/spatial-navigation-geckoview)
 [![npm](https://img.shields.io/npm/v/@dart-technologies/spatial-navigation-geckoview)](https://github.com/dart-technologies/spatial-navigation-geckoview/packages)
+[![API docs](https://img.shields.io/badge/docs-API%20reference-blue.svg)](https://dart-technologies.github.io/spatial-navigation-geckoview/)
 
 A GeckoView web extension providing **WICG-compatible spatial navigation** for Android TV, AAOS, and D-pad/keyboard navigation. Designed for seamless integration with [flutter-geckoview](https://github.com/dart-technologies/flutter-geckoview) and other GeckoView host applications.
 
@@ -385,6 +386,7 @@ To report a vulnerability, see [`SECURITY.md`](SECURITY.md). v3.0.1 shipped eigh
 
 ## Architecture
 
+- [API reference](https://dart-technologies.github.io/spatial-navigation-geckoview/) — generated TypeDoc (published from `main`)
 - [`docs/`](docs/README.md) — documentation index
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — safe-range clamping & config validation reference
 - [`docs/SCORING.md`](docs/SCORING.md) — score weights and the design rationale

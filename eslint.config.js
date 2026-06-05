@@ -10,6 +10,7 @@ export default tseslint.config(
     {
         ignores: [
             'dist/**',
+            'docs/api/**',
             'extension/spatial_navigation.js',
             'extension/spatial_navigation.debug.js',
             'extension/background.js',

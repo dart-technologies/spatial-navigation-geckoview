@@ -5,6 +5,7 @@ Start at the [project README](../README.md) for features, install, and usage.
 
 | Doc                                  | What's in it                                                                                        |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| [API reference][api]                 | Generated TypeDoc for the public API — published to GitHub Pages from `main`.                       |
 | [ARCHITECTURE.md](ARCHITECTURE.md)   | Components, the two outbound message paths, native-host selection, trust boundaries, build outputs. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Safe-range clamping bounds and per-field config validation rules.                                   |
 | [SCORING.md](SCORING.md)             | Candidate scoring algorithm — pass table, score formula, weight hierarchy.                          |
@@ -13,6 +14,8 @@ Start at the [project README](../README.md) for features, install, and usage.
 | [COMPARISON.md](COMPARISON.md)       | How this extension compares to the WICG polyfill and Pathduck.                                      |
 
 Design decisions are recorded under [`adr/`](adr/).
+
+[api]: https://dart-technologies.github.io/spatial-navigation-geckoview/
 
 Project-level docs live at the repository root: [CONTRIBUTING.md](../CONTRIBUTING.md),
 [RELEASING.md](../RELEASING.md), [SECURITY.md](../SECURITY.md), and

@@ -6923,7 +6923,7 @@ body *:focus, body *:focus-visible {
      * Multiple init attempts can occur if GeckoView re-injects the content
      * script: each call gets fresh state and a new handler ID. Stale handlers from
      * prior injections short-circuit themselves via the DOM-level `data-spatnav-handler-id`
-     * attribute (see {@link ./navigation/handlers.ts}). That event-level guard is
+     * attribute (set by `attachHandlers` in `navigation/handlers.ts`). That event-level guard is
      * the dedup mechanism — we deliberately do **not** also gate at the init level,
      * because past attempts to do so left stale handlers attached after navigation.
      */
