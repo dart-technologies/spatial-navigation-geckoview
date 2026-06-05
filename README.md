@@ -3,6 +3,7 @@
 [![Version](https://img.shields.io/badge/version-3.2.0-blue.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml/badge.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/dart-technologies/spatial-navigation-geckoview/badge)](https://scorecard.dev/viewer/?uri=github.com/dart-technologies/spatial-navigation-geckoview)
 [![npm](https://img.shields.io/npm/v/@dart-technologies/spatial-navigation-geckoview)](https://github.com/dart-technologies/spatial-navigation-geckoview/packages)
 
 A GeckoView web extension providing **WICG-compatible spatial navigation** for Android TV, AAOS, and D-pad/keyboard navigation. Designed for seamless integration with [flutter-geckoview](https://github.com/dart-technologies/flutter-geckoview) and other GeckoView host applications.
