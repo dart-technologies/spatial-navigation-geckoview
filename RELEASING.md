@@ -16,12 +16,12 @@ Security fixes ship as PATCH unless they require a behavior change that breaks d
 
 The version number appears in **four** source files. They must all be kept in sync. `scripts/sync-manifest-version.mjs` automates the second one from the first.
 
-| File                      | Field                | Synced by                |
-| ------------------------- | -------------------- | ------------------------ |
-| `package.json`            | `"version"`          | manual (source of truth) |
-| `extension/manifest.json` | `"version"`          | `npm run sync:manifest`  |
-| `main.ts`                 | `const VERSION`      | manual                   |
-| `core/state.ts`           | `state.version` (×2) | manual                   |
+| File                      | Field                                                                         | Synced by                |
+| ------------------------- | ----------------------------------------------------------------------------- | ------------------------ |
+| `package.json`            | `"version"`                                                                   | manual (source of truth) |
+| `extension/manifest.json` | `"version"`                                                                   | `npm run sync:manifest`  |
+| `main.ts`                 | `const VERSION`                                                               | manual                   |
+| `core/state.ts`           | `state.version = '…'` assignment **and** the `'…'` fallback literal (2 sites) | manual                   |
 
 After bumping `package.json`, run `npm run build:all` — that runs the build then sync-manifest, leaving only the two `*.ts` constants for you to update by hand.
 
@@ -59,7 +59,9 @@ Update all four locations listed above to the new version. Example for a `3.1.0`
 ```bash
 # Edit package.json -> "version": "3.1.0"
 # Edit main.ts -> const VERSION = '3.1.0';
-# Edit core/state.ts -> state.version = '3.1.0';  (two occurrences)
+# Edit core/state.ts -> the `state.version = '3.1.0'` assignment AND the
+#   `version: state.version || '3.1.0'` fallback literal (2 sites; a find/replace
+#   of the old version string across state.ts catches both)
 npm run build:all   # syncs extension/manifest.json
 ```
 

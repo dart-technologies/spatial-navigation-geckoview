@@ -181,6 +181,7 @@ function updateRuntimeLabel(state: SpatialNavState): void {
     if (!state.overlay) return;
 
     // Only show the runtime label in debug mode.
+    /* c8 ignore next */ // dead under tsx (isDebugActive() returns true); production bundles fold this to a literal early return
     if (!isDebugActive()) {
         state.overlay.removeAttribute(runtimeAttr);
         return;
@@ -203,6 +204,7 @@ function updateDebugHud(state: SpatialNavState): void {
     const hud = shadow.getElementById(debugHudId) as HTMLElement | null;
     if (!hud) return;
 
+    /* c8 ignore next */ // dead under tsx (isDebugActive() returns true); production bundles fold this to a literal early return
     if (!isDebugActive()) {
         hud.style.display = 'none';
         return;
@@ -264,6 +266,7 @@ function updateFocusLabel(
     const label = shadow.getElementById(overlayLabelId) as HTMLElement | null;
     if (!label) return;
 
+    /* c8 ignore next */ // dead under tsx (isDebugActive() returns true); production bundles fold this to a literal early return
     if (!isDebugActive()) {
         label.classList.remove('visible');
         return;

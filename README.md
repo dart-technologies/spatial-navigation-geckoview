@@ -1,6 +1,6 @@
 # Spatial Navigation for GeckoView
 
-[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview)
+[![Version](https://img.shields.io/badge/version-3.2.0-blue.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml/badge.svg)](https://github.com/dart-technologies/spatial-navigation-geckoview/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@dart-technologies/spatial-navigation-geckoview)](https://github.com/dart-technologies/spatial-navigation-geckoview/packages)
@@ -19,7 +19,7 @@ A GeckoView web extension providing **WICG-compatible spatial navigation** for A
 
 ### Platform Integration
 
-- ✅ **Native messaging** - Bidirectional communication with GeckoView host apps
+- ✅ **Native messaging** - Bidirectional communication with GeckoView host apps; ships with a hard-coded allowlist of `flutter_geckoview` and `react-native-geckoview`, auto-selected by probe-and-lock
 - ✅ **Focus exit events** - Notify native app when navigation leaves web content
 - ✅ **Config updates** - Runtime configuration from native layer
 
@@ -123,7 +123,7 @@ private fun setupMessageDelegate(extension: WebExtension) {
             }
             return null
         }
-    }, "geckoview-spatial-nav")
+    }, "flutter_geckoview") // delegate name must be an allowlisted host id — see "Supported hosts"
 }
 ```
 
@@ -236,47 +236,16 @@ All options can be set via `window.spatialNavConfig`:
 For the underlying score formula and weight hierarchy, see [`docs/SCORING.md`](docs/SCORING.md).
 Inputs are validated against a schema — malformed values are dropped with a warning rather than silently corrupting state.
 
-#### Safe-range clamping (3.0.1+, extended in 3.1.0)
+#### Safe-range clamping & validation (3.0.1+, extended in 3.1.0)
 
-Every numeric config value is clamped to a safe range at config read time. Out-of-range values are corrected to the nearest bound. This stops a malicious config from making the overlay invisible, off-screen, or paint-thread-prohibitive, or from setting observer debounces / cache timeouts to hostile extremes.
-
-**Visual styling**
-
-| Option                    | Min   | Max          | Default      |
-| ------------------------- | ----- | ------------ | ------------ |
-| `outlineWidth`            | `1`   | `20`         | `3`          |
-| `outlineOffset`           | `0`   | `50`         | `3`          |
-| `overlayZIndex`           | `1`   | `2147483646` | `2147483646` |
-| `arrowScale`              | `0.1` | `4`          | `1.0`        |
-| `safeAreaMargin`          | `0`   | `200`        | `12`         |
-| `overlayScrimOpacity`     | `0`   | `1`          | `0.06`       |
-| `overlayGlowOpacity`      | `0`   | `1`          | `0.35`       |
-| `overlayGlowBlur`         | `0`   | `64`         | `14`         |
-| `overlayInnerGlowOpacity` | `0`   | `1`          | `0.16`       |
-
-**Observers and timers** _(3.1+)_
-
-| Option                   | Min | Max     | Default |
-| ------------------------ | --- | ------- | ------- |
-| `mutationDebounce`       | `0` | `5000`  | `100`   |
-| `scrollThreshold`        | `0` | `1000`  | `8`     |
-| `virtualScrollDebounce`  | `0` | `5000`  | `150`   |
-| `precomputeCacheTimeout` | `0` | `60000` | `500`   |
-| `intersectionThreshold`  | `0` | `1`     | `0`     |
-
-**Scoring** _(3.1+)_
-
-| Option                   | Min | Max    | Default |
-| ------------------------ | --- | ------ | ------- |
-| `overlapThreshold`       | `0` | `4096` | `0`     |
-| `gridAlignmentTolerance` | `0` | `4096` | `20`    |
-| `minElementSize`         | `0` | `4096` | `1`     |
-
-`color` and `disabledColor` are validated against an allowlist of CSS color syntaxes (`#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `hsl()`, `hsla()`, named colors) by the same `parseColor()` validator. Strings that don't match the allowlist fall back to the default — they cannot inject arbitrary CSS into the shadow-DOM `:host` block.
-
-`virtualContainerSelectors` is capped at **32 entries**; each entry is capped at **256 characters**. Excess entries are dropped with a warning. This prevents DoS via a config that supplies millions of selectors to `document.querySelectorAll`.
-
-`iframeSupport` and `focusGroups` nested objects are field-validated _(3.1+)_: unknown keys are dropped, `focusMethod`/`boundaryBehavior` enums are checked against allowlists, and only plain objects (no Arrays, no `null` prototypes) are accepted.
+Every numeric config value is clamped to a safe range at read time, and `color` /
+`disabledColor` are checked against a CSS-color allowlist — so a malicious or buggy
+config can't make the overlay invisible, off-screen, or paint-prohibitive, inject
+CSS into the shadow DOM, or drive observer debounces to hostile extremes.
+`virtualContainerSelectors` is capped at 32 entries × 256 chars, and
+`iframeSupport` / `focusGroups` nested objects are field-validated. See
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full min/max/default
+tables and the per-field validation rules.
 
 ### Focus Group Options
 
@@ -322,12 +291,12 @@ document.addEventListener('spatialNavigationExit', (e) => {
 
 ### Messages from Extension → Native
 
-| Type                  | Payload                                            | Description                                              |
-| --------------------- | -------------------------------------------------- | -------------------------------------------------------- |
-| `spatialNavInit`      | `{ url, version }`                                 | Extension initialized                                    |
-| `focusChange`         | `{ direction, fromElement, toElement }`            | Focus moved                                              |
-| `focusExit`           | `{ direction, inTrap }`                            | Reached boundary (when `boundaryScrollBehavior: 'exit'`) |
-| `inputModalityChange` | `{ modality: 'touch' \| 'hardware-nav' }` _(3.1+)_ | User switched between touch and D-pad                    |
+| Type                  | Payload                                            | Description                                                         |
+| --------------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
+| `spatialNavInit`      | `{ url, version }`                                 | Extension initialized                                               |
+| `focusExit`           | `{ direction, inTrap }`                            | Reached boundary (when `boundaryScrollBehavior: 'exit'`)            |
+| `inputModalityChange` | `{ modality: 'touch' \| 'hardware-nav' }` _(3.1+)_ | User switched between touch and D-pad                               |
+| `simulateClick`       | `{ x, y }` (physical px) _(3.2+)_                  | Request a native MotionEvent tap (activation / menu-close fallback) |
 
 ### Messages from Native → Extension
 
@@ -336,6 +305,19 @@ document.addEventListener('spatialNavigationExit', (e) => {
 | `navigate`     | `{ direction }` | Request navigation |
 | `configUpdate` | `{ ...config }` | Update config      |
 | `refresh`      | `{}`            | Re-scan focusables |
+
+### Supported hosts
+
+The extension delivers native messages to a **hard-coded allowlist** of host
+application ids — currently `flutter_geckoview`
+([flutter-geckoview](https://github.com/dart-technologies/flutter-geckoview))
+and `react-native-geckoview`. On startup it probes the list in order and locks
+onto the first host that responds, so a single bundle works under either host
+with no configuration. The allowlist is compile-time only: it is **never**
+read from page-visible config, which prevents hostile web content from
+rerouting native traffic to an attacker-registered host. Your native
+`MessageDelegate` must be registered under one of these ids; to add a new host,
+append its id to `messaging/native-app-ids.ts` and rebuild.
 
 ## Debug logging
 
@@ -363,8 +345,8 @@ URL. Terser also drops `console.log/info/debug` at minification, so
 
 ```bash
 npm install
-npm run build:all          # Build + copy to extension/
-npm run build              # Build to dist/ only
+npm run build:all          # Build, then sync extension/manifest.json version
+npm run build              # Build dist/, extension/, and the e2e fixture
 npm test                   # Unit tests (Node native runner)
 npm run test:coverage      # With c8 coverage report
 npm run test:benchmark     # Performance benchmarks
@@ -380,11 +362,11 @@ npm run docs               # Generate TypeDoc
 
 | File                                          | Format  | Size   | Use Case                                    |
 | --------------------------------------------- | ------- | ------ | ------------------------------------------- |
-| `dist/spatial-navigation.js`                  | UMD     | ~75KB  | General usage                               |
-| `dist/spatial-navigation.esm.js`              | ESM     | ~75KB  | Modern bundlers                             |
-| `dist/spatial-navigation.extension.js`        | IIFE    | ~75KB  | GeckoView extension                         |
-| `dist/spatial-navigation.debug.js`            | IIFE    | ~220KB | Development (with sourcemaps)               |
-| `dist/core.js` / `dist/core.esm.js`           | UMD/ESM | ~38KB  | Core algorithms only (no overlay/messaging) |
+| `dist/spatial-navigation.js`                  | UMD     | ~88KB  | General usage                               |
+| `dist/spatial-navigation.esm.js`              | ESM     | ~88KB  | Modern bundlers                             |
+| `dist/spatial-navigation.extension.js`        | IIFE    | ~88KB  | GeckoView extension                         |
+| `dist/spatial-navigation.debug.js`            | IIFE    | ~320KB | Development (with sourcemaps)               |
+| `dist/core.js` / `dist/core.esm.js`           | UMD/ESM | ~42KB  | Core algorithms only (no overlay/messaging) |
 | `dist/messaging.js` / `dist/messaging.esm.js` | UMD/ESM | ~5KB   | Messaging adapters only                     |
 | `dist/background.js`                          | IIFE    | ~2KB   | WebExtension background relay               |
 
@@ -394,13 +376,16 @@ Upgrading from a previous version? See [`docs/MIGRATION.md`](docs/MIGRATION.md) 
 
 - **v3.0.0 → v3.0.1** — debug-by-default removed, focus color changed for WCAG contrast, deprecation warnings on `flutter*` aliases, eight security hardening defaults.
 - **v3.0.1 → v3.1.0** — new `inputModalityChange` message, `boundaryScrollBehavior` default changed to `'scroll'`, optional `visibilityMode: 'hardware-nav-only'`.
+- **v3.1.0 → v3.2.0** — adds `react-native-geckoview` as a second supported native host (auto-selected, no config change); removes the page-callable debug API from production builds; hardens the focus-group prototype-pollution surface. No web-page API changes.
 
 ## Security
 
-To report a vulnerability, see [`SECURITY.md`](SECURITY.md). v3.0.1 ships eight security hardening fixes — see the [3.0.1 changelog entry](CHANGELOG.md#301--2026-05-15) for the full list.
+To report a vulnerability, see [`SECURITY.md`](SECURITY.md). v3.0.1 shipped eight hardening fixes (see the [3.0.1 changelog entry](CHANGELOG.md#301--2026-05-15)); v3.2.0 adds focus-group prototype-pollution hardening, removes the debug API from production builds, and tightens the native-messaging and IPC boundaries.
 
 ## Architecture
 
+- [`docs/`](docs/README.md) — documentation index
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — safe-range clamping & config validation reference
 - [`docs/SCORING.md`](docs/SCORING.md) — score weights and the design rationale
 - [`docs/PRESETS.md`](docs/PRESETS.md) — TV / phone / tablet / kiosk presets
 - [`docs/MIGRATION.md`](docs/MIGRATION.md) — version migration notes
@@ -408,24 +393,8 @@ To report a vulnerability, see [`SECURITY.md`](SECURITY.md). v3.0.1 ships eight 
 
 ## Comparison with Other Libraries
 
-### vs WICG Polyfill
-
-| Feature          | WICG Polyfill | This Extension |
-| ---------------- | ------------- | -------------- |
-| W3C API          | Full          | Partial        |
-| CSS Properties   | Yes           | Yes            |
-| Visual Overlay   | No            | Yes            |
-| Native Messaging | No            | Yes            |
-| Virtual Scroll   | No            | Yes            |
-
-### vs Pathduck/spatialnavigation
-
-| Feature         | Pathduck   | This Extension   |
-| --------------- | ---------- | ---------------- |
-| Sections        | Yes        | Focus Groups     |
-| Visual Feedback | Class only | Animated overlay |
-| React/Vue       | No         | Framework-aware  |
-| Shadow DOM      | No         | Yes              |
+How this extension stacks up against the WICG polyfill and
+Pathduck/spatialnavigation — see [`docs/COMPARISON.md`](docs/COMPARISON.md).
 
 ## Contributing
 

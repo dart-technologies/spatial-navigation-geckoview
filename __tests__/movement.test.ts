@@ -875,3 +875,143 @@ describe('moveInDirection: clearOverlaySuppression', () => {
         }
     );
 });
+
+// ---------------------------------------------------------------------------
+// Focus-trap detection — table-driven across all 8 selectors
+// ---------------------------------------------------------------------------
+
+describe('focus-trap detection (config.focusTrapDetection=true)', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
+
+    const trapSelectors: { selector: string; setup: () => HTMLElement }[] = [
+        {
+            selector: 'role=dialog',
+            setup: () => {
+                const wrap = attachElement(createElement({ tagName: 'div', attrs: { role: 'dialog' } }));
+                return wrap;
+            },
+        },
+        {
+            selector: 'aria-modal=true',
+            setup: () => attachElement(createElement({ tagName: 'div', attrs: { 'aria-modal': 'true' } })),
+        },
+        {
+            selector: '.modal',
+            setup: () => attachElement(createElement({ tagName: 'div', className: 'modal' })),
+        },
+        {
+            selector: '.overlay',
+            setup: () => attachElement(createElement({ tagName: 'div', className: 'overlay' })),
+        },
+        {
+            selector: '[data-focus-trap]',
+            setup: () =>
+                attachElement(createElement({ tagName: 'div', attrs: { 'data-focus-trap': 'true' } })),
+        },
+        {
+            selector: '.MuiDialog-root',
+            setup: () => attachElement(createElement({ tagName: 'div', className: 'MuiDialog-root' })),
+        },
+        {
+            selector: '.ReactModal__Content',
+            setup: () => attachElement(createElement({ tagName: 'div', className: 'ReactModal__Content' })),
+        },
+        {
+            selector: '.chakra-modal__content',
+            setup: () => attachElement(createElement({ tagName: 'div', className: 'chakra-modal__content' })),
+        },
+    ];
+
+    for (const { selector, setup } of trapSelectors) {
+        test(`trap selector ${selector} sets state.currentTrap on boundary`, () => {
+            const wrap = setup();
+            const btn = createElement({
+                tagName: 'button',
+                tabindex: '0',
+                rect: { x: 10, y: 10, width: 50, height: 30 },
+            });
+            (wrap as unknown as { appendChild: (n: unknown) => void }).appendChild(btn);
+            setActiveElement(btn);
+            const state = createTestState([btn], {}, { focusTrapDetection: true });
+            // Move LEFT from the only button → boundary → trap should be detected.
+            moveInDirection(LEFT, null, state);
+            // currentTrap should reference some element (the wrap or related).
+            // Just assert it is non-null after a boundary hit.
+            assert.notEqual(state.currentTrap, null, `${selector} → state.currentTrap is set`);
+        });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// applyFocus — tabindex injection retry
+// ---------------------------------------------------------------------------
+
+describe('applyFocus tabindex retry', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
+
+    test('elements without tabindex get tabindex="-1" stamp when first focus() does not take', () => {
+        // div without tabindex — patch focus() so the first call doesn't change activeElement.
+        const target = attachElement(
+            createElement({
+                tagName: 'div',
+                rect: { x: 10, y: 60, width: 80, height: 30 },
+                attrs: { role: 'button' },
+            })
+        );
+        // Override focus to NOT change activeElement on the first call.
+        let focusCalls = 0;
+        const origFocus = target.focus.bind(target);
+        (target as { focus: (opts?: FocusOptions) => void }).focus = (opts?: FocusOptions) => {
+            focusCalls++;
+            if (focusCalls === 1) return; // refuse first attempt
+            origFocus(opts);
+        };
+        const source = attachElement(
+            createElement({
+                tagName: 'button',
+                rect: { x: 10, y: 10, width: 80, height: 30 },
+            })
+        );
+        setActiveElement(source);
+        const state = createTestState([source, target]);
+        moveInDirection(DOWN, null, state);
+        // After move, target should have a tabindex attribute stamped by the retry path.
+        assert.notEqual(target.getAttribute('tabindex'), null);
+        assert.equal(target.getAttribute('tabindex'), '-1');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// navbeforefocus event — preventDefault cancels movement
+// ---------------------------------------------------------------------------
+
+describe('navbeforefocus event', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
+
+    test('listener calling preventDefault on the destination aborts the move', () => {
+        const source = attachElement(
+            createElement({
+                tagName: 'button',
+                rect: { x: 10, y: 10, width: 80, height: 30 },
+            })
+        );
+        const target = attachElement(
+            createElement({
+                tagName: 'button',
+                rect: { x: 10, y: 60, width: 80, height: 30 },
+            })
+        );
+        setActiveElement(source);
+        // dispatchNavEvent fires on the destination element (target).
+        target.addEventListener('navbeforefocus', (e) => {
+            (e as Event).preventDefault();
+        });
+        const state = createTestState([source, target]);
+        const moved = moveInDirection(DOWN, null, state);
+        assert.equal(moved, false, 'cancelled by navbeforefocus');
+        assert.equal(window.document.activeElement, source);
+    });
+});

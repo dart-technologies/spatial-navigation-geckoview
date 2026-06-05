@@ -18,7 +18,7 @@ const BUDGETS = {
     'spatial-navigation.js': 110_000, // UMD
     'spatial-navigation.esm.js': 110_000, // ESM
     'spatial-navigation.extension.js': 110_000, // GeckoView IIFE (production)
-    'spatial-navigation.debug.js': 320_000, // Debug bundle (sourcemap, no minify). Bumped 280K→320K in v3.1.0 for modality watcher + visual-rect logic.
+    'spatial-navigation.debug.js': 350_000, // Debug bundle (sourcemap, no minify). 280K→320K in v3.1.0 (modality watcher + visual-rect); 320K→350K in v3.2.0 (native-host messaging, bounded DOM-scan walker, IPC hardening).
     'background.js': 5_000, // Tiny background relay
     'core.js': 60_000,
     'core.esm.js': 60_000,

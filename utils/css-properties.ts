@@ -357,6 +357,13 @@ export function findScrollSnapContainer(element: Element): Element | null {
 }
 
 /**
+ * Upper bound on descendants scanned for snap points. Each element incurs a
+ * `getComputedStyle` call, so an unbounded scan on a pathologically large
+ * container would be a DoS vector.
+ */
+const MAX_SNAP_SCAN_NODES = 20_000;
+
+/**
  * Get all snap points within a scroll snap container.
  *
  * @param container - Scroll snap container element
@@ -365,14 +372,28 @@ export function findScrollSnapContainer(element: Element): Element | null {
 export function getSnapPoints(container: Element): Element[] {
     const snapPoints: Element[] = [];
 
-    // Query all descendants
-    const descendants = container.querySelectorAll('*');
-
-    for (const el of Array.from(descendants)) {
-        const alignInfo = getScrollSnapAlign(el);
-        if (alignInfo.hasSnapAlign) {
-            snapPoints.push(el);
+    // Iterative pre-order walk over `.children`, indexing one node at a time and
+    // stopping at the cap. Unlike querySelectorAll('*'), this never materializes
+    // the full descendant list, so a pathologically large container cannot force
+    // a complete DOM enumeration before the cap applies — each visit also incurs
+    // a getComputedStyle, the dominant per-node cost we are bounding. Iterative
+    // (not recursive) so a deeply nested DOM cannot overflow the stack.
+    const stack: Array<{ el: Element; i: number }> = [{ el: container, i: 0 }];
+    let scanned = 0;
+    while (stack.length > 0 && scanned < MAX_SNAP_SCAN_NODES) {
+        const frame = stack[stack.length - 1];
+        const kids = frame.el.children;
+        if (frame.i >= kids.length) {
+            stack.pop();
+            continue;
         }
+        const child = kids[frame.i];
+        frame.i++;
+        scanned++;
+        if (getScrollSnapAlign(child).hasSnapAlign) {
+            snapPoints.push(child);
+        }
+        stack.push({ el: child, i: 0 });
     }
 
     return snapPoints;

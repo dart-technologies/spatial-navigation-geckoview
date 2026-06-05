@@ -36,7 +36,9 @@ npm test
 │   ├── geckoview.ts         # GeckoView WebExtension adapter
 │   ├── noop.ts              # Standalone/testing adapter
 │   ├── factory.ts           # Auto-detection factory
-│   └── types.ts             # Outbound message shapes
+│   ├── native-app-ids.ts    # Frozen compile-time native-host allowlist
+│   ├── native-host.ts       # Probe-and-lock native sender
+│   └── types.ts             # Outbound message shapes + OUTBOUND_MESSAGE_TYPES
 ├── navigation/     # Movement and event handling
 │   ├── handlers.ts          # Keyboard event handlers
 │   └── movement.ts          # Focus movement, boundary scroll, exit logic
@@ -127,8 +129,8 @@ Target: <5ms navigation latency with 1000+ elements.
 ### Coverage
 
 Coverage runs through `c8` on the unit test suite. CI enforces the thresholds
-configured in `package.json` (`lines: 70`, `functions: 70`, `statements: 70`,
-`branches: 55`). Run locally:
+configured in `package.json` (`lines: 88`, `functions: 88`, `statements: 88`,
+`branches: 80`). Run locally:
 
 ```bash
 npm run test:coverage

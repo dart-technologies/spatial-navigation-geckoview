@@ -194,6 +194,29 @@ describe('GeckoViewMessagingAdapter', () => {
         });
     });
 
+    test('drops malformed inbound messages at the port boundary (L2)', async () => {
+        await withMockBrowser({ connect: () => port }, async () => {
+            const a = new GeckoViewMessagingAdapter();
+            await a.connect();
+
+            const received: InboundMessage[] = [];
+            a.onMessage((m) => received.push(m));
+
+            // None of these have a string `type` — all dropped.
+            port.onMessage.fire(null);
+            port.onMessage.fire('a string');
+            port.onMessage.fire(42);
+            port.onMessage.fire({ noType: true });
+            port.onMessage.fire({ type: 123 });
+            assert.equal(received.length, 0, 'malformed inbound messages are dropped');
+
+            // A well-formed message still gets through.
+            port.onMessage.fire({ type: 'refresh' });
+            assert.equal(received.length, 1);
+            assert.equal(received[0].type, 'refresh');
+        });
+    });
+
     test('queues messages when no connection is available', async () => {
         delete globalScope.browser;
         const a = new GeckoViewMessagingAdapter();

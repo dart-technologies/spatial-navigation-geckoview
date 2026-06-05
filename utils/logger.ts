@@ -49,6 +49,7 @@ export const DEBUG: boolean = process.env.NODE_ENV !== 'production';
  * poking a page-visible global.
  */
 function isRuntimeDebugEnabled(): boolean {
+    /* c8 ignore next */ // dead under tsx (DEBUG=true); active in production bundles where Terser folds the `!false` to a literal early return
     if (!DEBUG) return false;
     if (typeof window === 'undefined') return false;
     const w = window as { SPATIAL_NAV_DEBUG?: boolean; flutterSpatialNavDebug?: boolean };
@@ -190,6 +191,7 @@ export function measurePerformance<T extends (...args: unknown[]) => unknown>(
     label: string,
     fn: T
 ): T {
+    /* c8 ignore next */ // dead under tsx; in production Terser inlines the early return + drops the wrapper
     if (!DEBUG) return fn;
 
     const log = createLogger(namespace);

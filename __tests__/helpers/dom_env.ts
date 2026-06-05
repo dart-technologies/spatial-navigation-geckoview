@@ -93,6 +93,9 @@ export function setupDomEnv(options: DomEnvOptions = {}): DomEnv {
 
     g.window = window;
     g.document = window.document as unknown as Document;
+    (g as { location?: unknown }).location = (window as unknown as { location: unknown }).location;
+    (g as { performance?: unknown }).performance =
+        (window as unknown as { performance?: unknown }).performance ?? performance;
     g.HTMLElement = window.HTMLElement as unknown as typeof HTMLElement;
     g.Element = window.Element as unknown as typeof Element;
     g.Node = window.Node as unknown as typeof Node;
@@ -243,6 +246,70 @@ export function attachElement<T extends HTMLElement>(el: T): T {
     // at the type level, so cast through unknown to appendChild.
     (activeWindow.document.body as unknown as { appendChild: (node: unknown) => void }).appendChild(el);
     return el;
+}
+
+/**
+ * Build a DOMRect literal from (x, y, w, h). Replaces the
+ * `{x, y, top, left, right, bottom, width, height, toJSON: () => ({})}` boilerplate
+ * scattered across test files.
+ */
+export function domRect(x: number, y: number, width: number, height: number): DOMRect {
+    return {
+        x,
+        y,
+        top: y,
+        left: x,
+        right: x + width,
+        bottom: y + height,
+        width,
+        height,
+        toJSON: () => ({}),
+    };
+}
+
+/**
+ * Stamp a fixed bounding-rect on `el` and return the element. happy-dom does
+ * not lay out, so any test that relies on `getBoundingClientRect()` returning
+ * non-zero dimensions must call this (or pass `rect` to `createElement`).
+ *
+ * Default rect is (0, 0, 80, 30) — a typical button-sized hit target.
+ */
+export function stampRect(el: HTMLElement, w = 80, h = 30, x = 0, y = 0): HTMLElement {
+    const rect = domRect(x, y, w, h);
+    el.getBoundingClientRect = () => rect;
+    return el;
+}
+
+/**
+ * Create a focusable button, attach it to body, and stamp it with a visible rect.
+ * The common shape `attachElement(createElement({tagName:'button', tabindex:'0', rect:{...}}))`
+ * collapsed into one call.
+ */
+export function createVisibleButton(
+    opts: {
+        x?: number;
+        y?: number;
+        width?: number;
+        height?: number;
+        id?: string;
+        text?: string;
+        attrs?: Record<string, string>;
+    } = {}
+): HTMLElement {
+    const el = createElement({
+        tagName: 'button',
+        tabindex: '0',
+        id: opts.id,
+        text: opts.text,
+        attrs: opts.attrs,
+        rect: {
+            x: opts.x ?? 0,
+            y: opts.y ?? 0,
+            width: opts.width ?? 80,
+            height: opts.height ?? 30,
+        },
+    });
+    return attachElement(el);
 }
 
 // ---------------------------------------------------------------------------
@@ -535,4 +602,250 @@ export function installBrowserBridge(overrides: Partial<MockBrowserRuntime> = {}
 /** Remove the browser bridge installed by `installBrowserBridge`. */
 export function removeBrowserBridge(): void {
     (globalThis as { browser?: unknown }).browser = undefined;
+}
+
+/**
+ * Install a fake `chrome.runtime` on globalThis (callback-style messaging API)
+ * with no `browser` global. Used by tests asserting the Chrome-callback path
+ * in `utils/bridge.ts` and the `isFirefoxStyle === false` branch.
+ */
+export function installChromeBridge(overrides: Partial<MockBrowserRuntime> = {}): SendCapture {
+    const capture: SendCapture = { count: 0, messages: [] };
+    const runtime: MockBrowserRuntime = {
+        sendMessage: (msg, callback) => {
+            capture.count++;
+            capture.messages.push(msg);
+            callback?.(undefined);
+        },
+        ...overrides,
+    };
+    const g = globalThis as { browser?: unknown; chrome?: { runtime: MockBrowserRuntime } };
+    g.browser = undefined;
+    g.chrome = { runtime };
+    return capture;
+}
+
+/** Remove the chrome bridge installed by `installChromeBridge`. */
+export function removeChromeBridge(): void {
+    (globalThis as { chrome?: unknown }).chrome = undefined;
+}
+
+/** Install a fake `ReactNativeWebView.postMessage` global for platform detection. */
+export function installReactNativeBridge(): void {
+    (globalThis as { ReactNativeWebView?: { postMessage: (m: unknown) => void } }).ReactNativeWebView = {
+        postMessage: () => {},
+    };
+}
+
+/** Remove the React Native bridge. */
+export function removeReactNativeBridge(): void {
+    (globalThis as { ReactNativeWebView?: unknown }).ReactNativeWebView = undefined;
+}
+
+/** Install a fake `webkit.messageHandlers` global for platform detection. */
+export function installWebkitBridge(): void {
+    (globalThis as { webkit?: { messageHandlers: Record<string, unknown> } }).webkit = {
+        messageHandlers: {},
+    };
+}
+
+/** Remove the webkit bridge. */
+export function removeWebkitBridge(): void {
+    (globalThis as { webkit?: unknown }).webkit = undefined;
+}
+
+/** Install a fake `SpatialNavBridge` global for Android-WebView platform detection. */
+export function installAndroidWebViewBridge(): void {
+    (globalThis as { SpatialNavBridge?: unknown }).SpatialNavBridge = {};
+}
+
+/** Remove the Android WebView bridge. */
+export function removeAndroidWebViewBridge(): void {
+    (globalThis as { SpatialNavBridge?: unknown }).SpatialNavBridge = undefined;
+}
+
+/** Clear every platform bridge — call from `afterEach` to keep tests isolated. */
+export function removeAllBridges(): void {
+    removeBrowserBridge();
+    removeChromeBridge();
+    removeReactNativeBridge();
+    removeWebkitBridge();
+    removeAndroidWebViewBridge();
+}
+
+// ---------------------------------------------------------------------------
+// Shadow DOM + observer trigger helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a host element with an open shadow root and optional inner HTML.
+ * The host is attached to document.body and returned alongside its shadow root.
+ */
+export function createShadowHost(html = ''): {
+    host: HTMLElement;
+    shadow: ShadowRoot;
+} {
+    if (!activeWindow) throw new Error('setupDomEnv() must be called first');
+    const host = createElement({ tagName: 'div' });
+    attachElement(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    if (html) {
+        (shadow as unknown as { innerHTML: string }).innerHTML = html;
+    }
+    return { host, shadow };
+}
+
+/**
+ * Replace globalThis.IntersectionObserver with a recording fake whose callback
+ * can be invoked via the returned `trigger(entries, observer?)` function.
+ *
+ * The fake records every `observe(el)` and `unobserve(el)` call in `observed`
+ * / `unobserved` arrays and exposes the most recently created observer via
+ * `lastObserver`. Restore the original IntersectionObserver via `restore()`.
+ */
+export interface IntersectionRecorder {
+    instances: FakeIntersectionObserver[];
+    lastObserver: FakeIntersectionObserver | null;
+    /**
+     * Invoke the callback of the most recent observer with synthetic entries.
+     * Each entry is materialized into a minimal IntersectionObserverEntry.
+     */
+    trigger(entries: { target: Element; isIntersecting: boolean }[]): void;
+    restore(): void;
+}
+
+interface FakeIntersectionObserver {
+    observed: Element[];
+    unobserved: Element[];
+    disconnected: boolean;
+    callback: IntersectionObserverCallback;
+    options: IntersectionObserverInit | undefined;
+}
+
+export function installFakeIntersectionObserver(): IntersectionRecorder {
+    const g = globalThis as { IntersectionObserver?: typeof IntersectionObserver };
+    const orig = g.IntersectionObserver;
+    const recorder: IntersectionRecorder = {
+        instances: [],
+        lastObserver: null,
+        trigger(entries) {
+            const obs = recorder.lastObserver;
+            if (!obs) return;
+            const ioEntries = entries.map(
+                (e) =>
+                    ({
+                        target: e.target,
+                        isIntersecting: e.isIntersecting,
+                        intersectionRatio: e.isIntersecting ? 1 : 0,
+                        boundingClientRect: e.target.getBoundingClientRect(),
+                        intersectionRect: e.target.getBoundingClientRect(),
+                        rootBounds: null,
+                        time: performance.now(),
+                    }) as IntersectionObserverEntry
+            );
+            obs.callback(ioEntries, obs as unknown as IntersectionObserver);
+        },
+        restore() {
+            if (orig) g.IntersectionObserver = orig;
+            else delete g.IntersectionObserver;
+        },
+    };
+
+    g.IntersectionObserver = function FakeIO(
+        this: FakeIntersectionObserver,
+        cb: IntersectionObserverCallback,
+        options?: IntersectionObserverInit
+    ) {
+        this.observed = [];
+        this.unobserved = [];
+        this.disconnected = false;
+        this.callback = cb;
+        this.options = options;
+        recorder.instances.push(this);
+        recorder.lastObserver = this;
+    } as unknown as typeof IntersectionObserver;
+
+    (g.IntersectionObserver as unknown as { prototype: object }).prototype = {
+        observe(this: FakeIntersectionObserver, target: Element) {
+            this.observed.push(target);
+        },
+        unobserve(this: FakeIntersectionObserver, target: Element) {
+            this.unobserved.push(target);
+        },
+        disconnect(this: FakeIntersectionObserver) {
+            this.disconnected = true;
+        },
+        takeRecords() {
+            return [];
+        },
+    };
+
+    return recorder;
+}
+
+// ---------------------------------------------------------------------------
+// Microtask + console helpers
+// ---------------------------------------------------------------------------
+
+/** Yield to the microtask queue once. Use after fake-async work that schedules via Promise.resolve(). */
+export function flushMicrotasks(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+export interface ConsoleCapture {
+    log: unknown[][];
+    info: unknown[][];
+    warn: unknown[][];
+    error: unknown[][];
+    debug: unknown[][];
+    group: unknown[][];
+    groupEnd: number;
+    restore(): void;
+}
+
+/**
+ * Replace console.{log,info,warn,error,debug,group,groupEnd} with array-pushing
+ * spies. Returns the capture buffers plus a `restore()` to undo the patch.
+ *
+ * Each call records the variadic arguments array, so assertions can match
+ * either the first argument (`capture.warn[0][0]`) or the full call shape.
+ */
+export function captureConsole(): ConsoleCapture {
+    const orig = {
+        log: console.log,
+        info: console.info,
+        warn: console.warn,
+        error: console.error,
+        debug: console.debug,
+        group: console.group,
+        groupEnd: console.groupEnd,
+    };
+    const capture: ConsoleCapture = {
+        log: [],
+        info: [],
+        warn: [],
+        error: [],
+        debug: [],
+        group: [],
+        groupEnd: 0,
+        restore() {
+            console.log = orig.log;
+            console.info = orig.info;
+            console.warn = orig.warn;
+            console.error = orig.error;
+            console.debug = orig.debug;
+            console.group = orig.group;
+            console.groupEnd = orig.groupEnd;
+        },
+    };
+    console.log = (...args: unknown[]) => capture.log.push(args);
+    console.info = (...args: unknown[]) => capture.info.push(args);
+    console.warn = (...args: unknown[]) => capture.warn.push(args);
+    console.error = (...args: unknown[]) => capture.error.push(args);
+    console.debug = (...args: unknown[]) => capture.debug.push(args);
+    console.group = (...args: unknown[]) => capture.group.push(args);
+    console.groupEnd = () => {
+        capture.groupEnd++;
+    };
+    return capture;
 }

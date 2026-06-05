@@ -10,6 +10,26 @@ the host and avoids the impression that v1/v2 were ever published.
 If you were depending on the bundled-inside-flutter-geckoview build, see the
 [Pre-v3 → v3.0.0](#pre-v3--v300) section below.
 
+## v3.1.0 → v3.2.0
+
+Additive and security-hardening only — **no web-page API changes**. Two things
+are visible to host-app integrators:
+
+- **A second native host is supported.** Native messaging now targets a
+  hard-coded allowlist of `flutter_geckoview` and `react-native-geckoview`,
+  auto-selected by probe-and-lock (the first host that responds is reused for
+  the session). If your `MessageDelegate` is already registered under one of
+  those ids, nothing changes. See
+  [README § Supported hosts](../README.md#supported-hosts).
+- **The page-callable debug API is gone from production builds.**
+  `window.spatialNavDebug` / `flutterFocusDebug` (and the `document.title`
+  focus-description channel) now ship only in the debug bundle. If a tool relied
+  on them in production, load `extension/spatial_navigation.debug.js` instead.
+
+Everything else — focus-group prototype-pollution hardening, deep DOM-scan
+caps, supply-chain hygiene — is internal. Full list in the
+[CHANGELOG](../CHANGELOG.md).
+
 ## v3.0.1 → v3.1.0
 
 A feature release. Additive only — no API removals, no behavior changes that
@@ -184,7 +204,7 @@ for the full list). The behavior shifts visible to integrators:
   like `"red; --x: url(http://attacker)"` no longer reach the shadow-DOM
   stylesheet. Same validator runs on `color`.
 - **Numeric config values are clamped to safe ranges.** See the
-  [Safe-range clamping table in README](../README.md#safe-range-clamping-301).
+  [Safe-range clamping reference](CONFIGURATION.md).
   Most consumers will not notice — the bounds are generous (e.g., `outlineWidth`
   is `1..20`, `safeAreaMargin` is `0..200`). Values outside the range are
   corrected to the nearest bound; a warning is logged.

@@ -5,6 +5,30 @@ All notable changes to the Spatial Navigation for GeckoView extension will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] — 2026-06-05
+
+A security-hardening release plus multi-host support. No breaking changes to web-page API; the only removal is the **debug API in production builds** (see Security). All changes are additive for host integrators.
+
+### Added
+
+- **`react-native-geckoview` host support.** Native messaging now targets a hard-coded allowlist — `flutter_geckoview` and `react-native-geckoview` — selected at runtime by probe-and-lock (the first host that responds is reused for the session). A single bundle works under either host with no configuration. New `messaging/native-app-ids.ts` (frozen allowlist) and `messaging/native-host.ts` (`createNativeSender` probe-and-lock helper, shared by `background.ts` and `messaging/geckoview.ts`). The allowlist is compile-time only and never read from page input, preserving the `d23e1ab` anti-rerouting guarantee.
+
+### Security
+
+- **Focus-group prototype-chain DoS (MEDIUM).** A page with `data-focus-group="__proto__"` (or `constructor`, `hasOwnProperty`, …) made `state.focusGroups[id]` resolve to an inherited `Object.prototype` member; the truthy result skipped group creation and then threw an uncaught `TypeError` on `group.addMember`, aborting **every** keypress and disabling spatial navigation for the page. `state.focusGroups` is now a null-prototype map (`Object.create(null)` in `core/state.ts` and `utils/dom.ts`).
+- **Debug API removed from production bundle (MEDIUM).** `initDebugApi` (which installs page-callable `window.spatialNavDebug` / `flutterFocusDebug` and writes focused-element descriptions into `document.title`) is now gated behind build-time `DEBUG` in `main.ts`, matching the existing `core/overlay.ts` HUD gate. Terser strips it from release builds; it remains available in the debug bundle.
+- **IPC boundary hardening (defense-in-depth).** The background relay now drops messages whose `type` is not a known `OUTBOUND_MESSAGE_TYPES` value and rejects a definitively foreign `sender`; relay logs now carry the message **type** only, not full message/response bodies. The GeckoView adapter validates inbound native-port messages with an `isInboundMessage` type guard before dispatch.
+
+### Changed
+
+- **Supply-chain hygiene.** Removed the redundant, unmaintained `yarn.lock`; `package-lock.json` (used by `npm ci` in CI) is the single source of truth. Added a CI bundle-freshness gate (`git diff --exit-code -- extension/` after build) so the committed extension bundles cannot drift from source, and pinned the third-party `softprops/action-gh-release` Action to a commit SHA.
+- **Bounded DOM scans.** Every page-scanning path in `utils/dom.ts` — `findFocusablesDeep` (shadow), the non-shadow `refreshFocusables` scan, the iframe-support scan, `getSnapPoints`, and `detectVirtualContainers` (virtual-scroll sentinel setup) — now walks the DOM lazily via a shared, budget-bounded walker (`walkElementsBounded`) instead of `querySelectorAll` / `slot.assignedElements`, and the focusable-candidate list is capped before the per-node `getComputedStyle` pass. A hostile page can no longer force a full DOM enumeration or match-list allocation on any of these paths.
+- **Pruned never-implemented outbound message types.** `focusChange`, `tabClosed`, `extensionInstalled`, and `extensionUpdated` were declared in the protocol surface but never sent by the extension nor handled by any host. The live extension→native types are now exactly `spatialNavInit`, `focusExit`, `inputModalityChange`, and `simulateClick`.
+
+### Documentation
+
+- Slimmed the README: the safe-range clamping reference moved to a new [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the library comparison to [`docs/COMPARISON.md`](docs/COMPARISON.md), with a new [`docs/README.md`](docs/README.md) index. Synced the README feature list, migration notes, and `SECURITY.md` supported-versions table with this release, and corrected the build-script descriptions, bundle sizes, and `CONTRIBUTING.md` coverage thresholds.
+
 ## [3.1.0] — 2026-05-15
 
 A feature release focused on input-modality awareness, smarter boundary behavior, and visual-rect accuracy on real-world sites. **One default behavior change**: `boundaryScrollBehavior` now defaults to `'scroll'` (was effectively `'exit'` in 3.0.x). Set `boundaryScrollBehavior: 'exit'` in `window.spatialNavConfig` to preserve the legacy behavior. All other changes are additive.

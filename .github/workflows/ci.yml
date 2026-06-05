@@ -74,6 +74,8 @@ jobs:
       - run: npm ci
       - run: npm run build:all
       - run: npm run build:types
+      - name: Verify committed extension bundles match source
+        run: git diff --exit-code -- extension/
       - name: Bundle size budget
         run: npm run size
 

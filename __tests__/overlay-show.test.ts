@@ -317,3 +317,110 @@ describe('showOverlay — snap class for big jumps (v3.1.1)', () => {
         }
     );
 });
+
+// ---------------------------------------------------------------------------
+// parseColor branches via generateShadowCSS
+// ---------------------------------------------------------------------------
+
+import { generateShadowCSS } from '../core/overlay';
+import { hideOverlay } from '../core/overlay';
+
+describe('parseColor — exercised through generateShadowCSS', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
+
+    test('hex-3 format yields RGB values', () => {
+        const state = createTestState([]);
+        state.config = { ...state.config, color: '#f00' };
+        const css = generateShadowCSS(state.config);
+        // #f00 → r=255 g=0 b=0
+        assert.match(css, /--sn-focus-rgb: 255, 0, 0/);
+    });
+
+    test('hex-6 format yields RGB values', () => {
+        const state = createTestState([]);
+        state.config = { ...state.config, color: '#1565C0' };
+        const css = generateShadowCSS(state.config);
+        // #1565C0 → r=21 g=101 b=192
+        assert.match(css, /--sn-focus-rgb: 21, 101, 192/);
+    });
+
+    test('rgb(r, g, b) format', () => {
+        const state = createTestState([]);
+        state.config = { ...state.config, color: 'rgb(10, 20, 30)' };
+        const css = generateShadowCSS(state.config);
+        assert.match(css, /--sn-focus-rgb: 10, 20, 30/);
+    });
+
+    test('rgba(r, g, b, a) format extracts rgb only', () => {
+        const state = createTestState([]);
+        state.config = { ...state.config, color: 'rgba(50, 100, 150, 0.5)' };
+        const css = generateShadowCSS(state.config);
+        assert.match(css, /--sn-focus-rgb: 50, 100, 150/);
+    });
+
+    test('"r, g, b" comma triple (legacy disabledColor format)', () => {
+        const state = createTestState([]);
+        state.config = { ...state.config, color: '200, 100, 50' };
+        const css = generateShadowCSS(state.config);
+        assert.match(css, /--sn-focus-rgb: 200, 100, 50/);
+    });
+
+    test('invalid color falls back to default Material-Blue-800', () => {
+        const state = createTestState([]);
+        state.config = { ...state.config, color: 'invalid-string' };
+        const css = generateShadowCSS(state.config);
+        // Fallback {r:21, g:101, b:192}
+        assert.match(css, /--sn-focus-rgb: 21, 101, 192/);
+    });
+
+    test('disabledColor parsed through same validator', () => {
+        const state = createTestState([]);
+        state.config = { ...state.config, color: '#000', disabledColor: '#888' };
+        const css = generateShadowCSS(state.config);
+        assert.match(css, /--sn-disabled-rgb: 136, 136, 136/);
+    });
+
+    test('dark-mode auto-adjusts dim colors brighter', () => {
+        // patch matchMedia to report dark-mode active.
+        (window as unknown as { matchMedia: (q: string) => { matches: boolean } }).matchMedia = (
+            q: string
+        ) => ({ matches: q.includes('dark') });
+        const state = createTestState([]);
+        // A dim color (luminance < 0.5) should be bumped 1.3x.
+        state.config = { ...state.config, color: '#101010' };
+        const css = generateShadowCSS(state.config);
+        // 16 * 1.3 = 20.8 → rounds to 21
+        assert.match(css, /--sn-focus-rgb: 21, 21, 21/);
+    });
+});
+
+describe('hideOverlay', () => {
+    beforeEach(() => setupDomEnv());
+    afterEach(() => teardownDomEnv());
+
+    test('clears activeResizeObserver and label visibility', () => {
+        const { state, overlay } = setupOverlayState();
+        // Stage a fake resize observer.
+        const observerSpy = { disconnected: false };
+        state.activeResizeObserver = {
+            disconnect: () => {
+                observerSpy.disconnected = true;
+            },
+            observe: () => {},
+            unobserve: () => {},
+        } as unknown as ResizeObserver;
+        overlay.classList.add('visible');
+        hideOverlay(state);
+        assert.equal(observerSpy.disconnected, true);
+        assert.equal(overlay.classList.contains('visible'), false);
+        assert.equal(state.activeResizeObserver, null);
+    });
+
+    test('is safe to call when state.overlay is null', () => {
+        const state = createTestState([]);
+        state.overlay = null;
+        // Must not throw.
+        assert.doesNotThrow(() => hideOverlay(state));
+    });
+});

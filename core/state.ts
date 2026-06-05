@@ -237,7 +237,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
 
     // Core navigation state
     state.config = config;
-    state.version = '3.1.0';
+    state.version = '3.2.0';
     state.currentIndex = typeof state.currentIndex === 'number' ? state.currentIndex : -1;
     state.initialized = !!state.initialized;
     state.handlersAttached = !!state.handlersAttached;
@@ -252,7 +252,12 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
     // Focus tracking arrays
     state.focusables = Array.isArray(state.focusables) ? state.focusables : [];
     state.focusableElements = Array.isArray(state.focusableElements) ? state.focusableElements : [];
-    state.focusGroups = state.focusGroups || {};
+    // Null-prototype map: focus-group ids come from the page's `data-focus-group`
+    // attribute (attacker-controlled). A plain `{}` would resolve keys like
+    // `__proto__`/`constructor` to inherited members, and the truthy result
+    // would skip group creation and then throw on `group.addMember`, aborting
+    // every keypress. A prototype-less map makes such keys resolve to undefined.
+    state.focusGroups = state.focusGroups || Object.create(null);
     state.lastRefreshTime = state.lastRefreshTime || 0;
     state.focusableCount = state.focusableCount || 0;
 
@@ -359,6 +364,6 @@ export function getInstrumentation():
         ...state.instrumentation,
         focusablesCount: state.focusables.length,
         currentIndex: state.currentIndex,
-        version: state.version || '3.1.0',
+        version: state.version || '3.2.0',
     };
 }

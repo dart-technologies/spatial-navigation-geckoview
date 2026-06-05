@@ -36,7 +36,7 @@ import { initDebugApi } from './utils/debug';
 import { detectRuntimeContext, formatRuntimeLabel } from './utils/runtime';
 import { moveInDirection } from './navigation/movement';
 import { findDirectionalCandidate } from './core/scoring';
-import { createLogger } from './utils/logger';
+import { createLogger, DEBUG } from './utils/logger';
 import { installLegacyDeprecations } from './utils/deprecation';
 import { clearOverlaySuppression } from './utils/focus-helpers';
 import { GeckoViewMessagingAdapter, NoopMessagingAdapter } from './messaging';
@@ -51,7 +51,7 @@ const log = createLogger('Main');
 
 const STYLE_ID = 'spatnav-focus-styles';
 const OVERLAY_HOST_ID = 'spatnav-focus-host';
-const VERSION = '3.1.0';
+const VERSION = '3.2.0';
 
 // Debounce window for the pageshow re-init handler. Below this threshold we
 // treat consecutive events as the same logical navigation.
@@ -125,14 +125,7 @@ function handleNativeResponse(message: InboundMessage, state: SpatialNavState): 
  * Send a message to the native layer via the active messaging adapter.
  */
 function postToNative(message: {
-    type:
-        | 'spatialNavInit'
-        | 'focusChange'
-        | 'focusExit'
-        | 'inputModalityChange'
-        | 'tabClosed'
-        | 'extensionInstalled'
-        | 'extensionUpdated';
+    type: 'spatialNavInit' | 'focusExit' | 'inputModalityChange';
     [key: string]: unknown;
 }): boolean {
     return messagingAdapter?.send(message) ?? false;
@@ -318,7 +311,7 @@ function reinitializeAfterPageshow(state: SpatialNavState): void {
  * the dedup mechanism — we deliberately do **not** also gate at the init level,
  * because past attempts to do so left stale handlers attached after navigation.
  */
-function initSpatialNavigation(): void {
+export function initSpatialNavigation(): void {
     // Bump the global init counter so the debug API can surface multi-injection issues.
     window.__SPATIAL_NAV_INIT_COUNT__ = (window.__SPATIAL_NAV_INIT_COUNT__ || 0) + 1;
     const initAttempt = window.__SPATIAL_NAV_INIT_COUNT__;
@@ -400,8 +393,14 @@ function initSpatialNavigation(): void {
     // 10. Attach mutation observer
     attachMutationObserver(state);
 
-    // 11. Initialize debug API
-    initDebugApi(state);
+    // 11. Initialize debug API — gated on build-time DEBUG so the production
+    // bundle does not expose `window.spatialNavDebug` (page-callable navigation
+    // control) or write focused-element descriptions into `document.title`.
+    // Terser dead-code-eliminates the whole call in release builds. Mirrors the
+    // `isDebugActive()` gate in core/overlay.ts.
+    if (DEBUG) {
+        initDebugApi(state);
+    }
 
     // 12. Install WICG polyfill
     installWICGPolyfill(state);
@@ -661,4 +660,7 @@ function initSpatialNavigation(): void {
     });
 }
 
-initSpatialNavigation();
+// Gate auto-init so integration tests can import this module without side effects.
+if (!(globalThis as { __SPATNAV_NO_AUTO_INIT__?: boolean }).__SPATNAV_NO_AUTO_INIT__) {
+    initSpatialNavigation();
+}

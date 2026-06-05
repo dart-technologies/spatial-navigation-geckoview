@@ -4,11 +4,13 @@
 
 Security fixes are backported only to the latest minor release in each major version line.
 
-| Version | Supported | Notes                                                                                                     |
-| ------- | --------- | --------------------------------------------------------------------------------------------------------- |
-| 3.0.x   | ✅        | Active. 3.0.1 ships eight hardening fixes (see [CHANGELOG](CHANGELOG.md#301--2026-05-15)).                |
-| 3.0.0   | ⚠️        | Superseded. Upgrade to 3.0.1 — 3.0.0 has CSS injection, DoS, and info-disclosure surfaces fixed in 3.0.1. |
-| < 3.0   | ❌        | Internal pre-public builds embedded in flutter-geckoview. Not supported standalone.                       |
+| Version | Supported | Notes                                                                                                                        |
+| ------- | --------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 3.2.x   | ✅        | Active — latest minor. Carries all prior hardening plus react-native-geckoview host support (see [CHANGELOG](CHANGELOG.md)). |
+| 3.1.x   | ⚠️        | Superseded by 3.2.x. Upgrade to 3.2.x for ongoing support.                                                                   |
+| 3.0.x   | ⚠️        | Superseded. 3.0.1 contains the eight hardening fixes; upgrade to 3.2.x.                                                      |
+| 3.0.0   | ❌        | CSS injection, DoS, and info-disclosure surfaces were fixed in 3.0.1. Do not deploy.                                         |
+| < 3.0   | ❌        | Internal pre-public builds embedded in flutter-geckoview. Not supported standalone.                                          |
 
 ## Reporting a vulnerability
 
@@ -59,13 +61,14 @@ The extension ships as both an npm package (`@dart-technologies/spatial-navigati
 
 ## Hardening surface
 
-v3.0.1 explicitly hardened these surfaces. New reports against these areas are very welcome — we may have missed cases.
+v3.0.1 and later explicitly hardened these surfaces. New reports against these areas are very welcome — we may have missed cases.
 
 - **Config validation** (`core/config.ts`) — type checking, enum allowlists, numeric clamping, array length caps, color-string allowlist.
-- **Native messaging** (`messaging/`) — pinned native app id, frozen direction lookup tables, message-shape validation.
+- **Native messaging** (`messaging/`) — host ids come from a frozen compile-time allowlist (`native-app-ids.ts`), never page config; probe-and-lock host selection; frozen direction lookup tables; inbound/outbound message-shape validation plus an outbound `type` allowlist and foreign-sender check on the background relay.
+- **Focus-group maps** (`core/state.ts`, `utils/dom.ts`) — page-controlled `data-focus-group` ids key a null-prototype map (`Object.create(null)`), closing a prototype-chain DoS.
 - **Overlay rendering** (`core/overlay.ts`) — color values pass through `parseColor()` before reaching the shadow-DOM stylesheet.
 - **State isolation** (`core/state.ts`) — module-cache-only reads; `window.spatialNavState` is publish-only.
-- **Build-time gating** (`utils/logger.ts`, `rollup.config.js`) — `DEBUG` and `SPATIAL_NAV_DEBUG` are tree-shaken from production bundles; debug bundle is not in `web_accessible_resources`.
+- **Build-time gating** (`utils/logger.ts`, `main.ts`, build config) — `DEBUG` and `SPATIAL_NAV_DEBUG` are tree-shaken from production bundles, including the page-callable debug API; the debug bundle is not in `web_accessible_resources`.
 
 ## Acknowledgements
 

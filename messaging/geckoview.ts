@@ -18,6 +18,7 @@
 
 import { BaseMessagingAdapter } from './adapter';
 import { createLogger } from '../utils/logger';
+import { createNativeSender } from './native-host';
 import type { OutboundMessage, InboundMessage } from './types';
 
 const log = createLogger('Messaging');
@@ -46,16 +47,21 @@ function getBrowser(): { runtime?: BrowserRuntime } | undefined {
     return undefined;
 }
 
-/**
- * Native-messaging app identifier.
- *
- * Hardcoded — NOT configurable from page-visible surface. A web-page-writable
- * `window.spatialNavConfig.nativeAppId` previously let untrusted content
- * redirect all outbound native traffic to an attacker-registered host. Keep
- * this in lockstep with `NATIVE_APP_ID` in `background.ts`.
- */
-const NATIVE_APP_ID = 'flutter_geckoview';
 const PORT_NAME = 'spatial-nav-content';
+
+/**
+ * Runtime type guard for messages arriving on the native port. The native host
+ * is trusted, so this is defense-in-depth: a malformed payload (missing or
+ * non-string `type`) is dropped at the boundary instead of being cast and
+ * dispatched downstream.
+ */
+function isInboundMessage(message: unknown): message is InboundMessage {
+    return (
+        typeof message === 'object' &&
+        message !== null &&
+        typeof (message as { type?: unknown }).type === 'string'
+    );
+}
 
 /** Cap reconnect backoff so a flapping native peer doesn't push delay to infinity. */
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -83,6 +89,9 @@ export class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
     private reconnectAttempts = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+    /** Probe-and-lock sender over the hard-coded native-app-id allowlist. */
+    private readonly sendToNative = createNativeSender();
+
     constructor() {
         super();
     }
@@ -108,7 +117,11 @@ export class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
                 this.port = b.runtime.connect({ name: PORT_NAME });
 
                 this.port.onMessage.addListener((message) => {
-                    this.handleMessage(message as InboundMessage);
+                    if (!isInboundMessage(message)) {
+                        log.warn('dropping malformed inbound message');
+                        return;
+                    }
+                    this.handleMessage(message);
                 });
 
                 this.port.onDisconnect.addListener(() => {
@@ -160,24 +173,24 @@ export class GeckoViewMessagingAdapter extends BaseMessagingAdapter {
             }
         }
 
-        // Fallback to sendNativeMessage with the hardcoded app id.
+        // Fallback to sendNativeMessage, selecting the host from the hard-coded
+        // NATIVE_APP_IDS allowlist via probe-and-lock (never page-controlled).
         //
-        // `sendNativeMessage` is promise-returning in WebExtensions, so a
-        // synchronous try/catch only catches launch-path errors (e.g. the
-        // function is missing). The async failure case (native host not
-        // installed, runtime rejects the message) lands as a promise
-        // rejection — we attach `.catch` so the message gets queued for
-        // retry and we never leak an unhandled-rejection warning.
+        // `sendToNative` is promise-returning, so a synchronous try/catch only
+        // catches launch-path errors (e.g. the API throws synchronously). The
+        // async failure case (native host not installed, runtime rejects the
+        // message) lands as a promise rejection — we attach `.catch` so the
+        // message gets queued for retry and we never leak an unhandled rejection.
         const b = getBrowser();
-        if (b?.runtime?.sendNativeMessage) {
+        const runtime = b?.runtime;
+        if (runtime?.sendNativeMessage) {
+            // Bound closure preserves `this === runtime` for the native call.
+            const sendNative = (appId: string, msg: unknown) => runtime.sendNativeMessage!(appId, msg);
             try {
-                const result = b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
-                if (result && typeof (result as Promise<unknown>).then === 'function') {
-                    (result as Promise<unknown>).catch((err) => {
-                        log.warn('sendNativeMessage rejected, requeueing', err);
-                        this.queueMessage(fullMessage);
-                    });
-                }
+                this.sendToNative(sendNative, fullMessage).catch((err) => {
+                    log.warn('sendNativeMessage rejected, requeueing', err);
+                    this.queueMessage(fullMessage);
+                });
                 return true;
             } catch (err) {
                 log.warn('sendNativeMessage threw, requeueing', err);

@@ -23,8 +23,45 @@ const focusableSelector =
 // ===== Shadow DOM Traversal =====
 
 /**
+ * Upper bound on elements *visited* during a single focusable scan — light DOM
+ * and deep shadow traversal alike. Every discovery walks the tree lazily and
+ * stops here, so a hostile/pathological page (millions of nodes, deeply nested
+ * shadow roots) can never force a full DOM enumeration. Shared across the
+ * recursion via a budget object. Set far above any realistic page.
+ */
+export const MAX_SCAN_NODES = 100_000;
+
+/**
+ * Walk elements under `root` in document (pre-order) order via
+ * firstElementChild/nextElementSibling, invoking `visit` for each, until the
+ * shared `budget` is exhausted (then truncate with a warning). A lazy, bounded
+ * alternative to `querySelectorAll`: it never materializes a full NodeList, so a
+ * hostile, very large DOM cannot force a complete enumeration before any cap
+ * applies. (TreeWalker would be cleaner but is unreliable under happy-dom.)
+ */
+export function walkElementsBounded(
+    root: ParentNode,
+    budget: { nodes: number },
+    visit: (el: Element) => void
+): void {
+    const pending: Element[] = [];
+    let node: Element | null = root.firstElementChild;
+    while (node) {
+        if (budget.nodes <= 0) {
+            log.warn('DOM scan hit node budget; truncating');
+            break;
+        }
+        budget.nodes--;
+        visit(node);
+        if (node.nextElementSibling) pending.push(node.nextElementSibling);
+        node = node.firstElementChild ?? pending.pop() ?? null;
+    }
+}
+
+/**
  * Find focusable elements including those in Shadow DOM.
- * Recursively traverses shadow roots and flattens slot assignments.
+ * Recursively traverses shadow roots; slotted light-DOM content needs no special
+ * handling — it is the host's light children, which the same walk already visits.
  *
  * Performance optimizations:
  * - Uses Set<Element> for O(1) duplicate detection instead of Array.includes() O(n)
@@ -41,7 +78,8 @@ function findFocusablesDeep(
     root: Node,
     config: Partial<SpatialNavConfig>,
     visited = new Set<Node>(),
-    seen = new Set<Element>()
+    seen = new Set<Element>(),
+    budget: { nodes: number } = { nodes: MAX_SCAN_NODES }
 ): HTMLElement[] {
     const results: HTMLElement[] = [];
 
@@ -54,58 +92,39 @@ function findFocusablesDeep(
         visited.add(root);
     }
 
-    // Light DOM focusables
+    const traverseShadow = !!(config && config.traverseShadowDom);
+
+    // Single lazy, budget-bounded pre-order walk of this root's light tree. Per
+    // element: collect it if focusable and descend into its shadow root. One
+    // bounded walk (rather than querySelectorAll, which materializes the full
+    // match list up front) means a hostile, very large DOM can never force a
+    // complete enumeration before the shared node budget applies. The walk stays
+    // within this root; the recursion descends across shadow boundaries, sharing
+    // the same budget.
     try {
-        const lightFocusables = (root as Element | Document).querySelectorAll(focusableSelector);
-        for (const el of lightFocusables) {
-            if (!seen.has(el)) {
-                seen.add(el);
-                results.push(el as HTMLElement);
+        walkElementsBounded(root as Element | Document, budget, (element) => {
+            if (!seen.has(element) && element.matches(focusableSelector)) {
+                seen.add(element);
+                results.push(element as HTMLElement);
             }
-        }
-    } catch {
-        // querySelectorAll may fail on some shadow roots
-    }
 
-    // Only traverse Shadow DOM if enabled (expensive operation)
-    if (!config || !config.traverseShadowDom) {
-        return results;
-    }
+            if (!traverseShadow) {
+                return;
+            }
 
-    // Traverse into shadow roots
-    try {
-        const allElements = (root as Element | Document).querySelectorAll('*');
-        for (const element of allElements) {
+            // Descend into the element's shadow root, sharing the budget. We do
+            // NOT separately resolve <slot> assignments: slotted content is the
+            // host's LIGHT-DOM children, which this same walk already visits in
+            // the host's containing tree (deduped via `seen`). Calling
+            // slot.assignedElements() would materialize the full assigned array
+            // up front — exactly what this bounded walk exists to avoid.
             const host = element as HTMLElement;
             if (host.shadowRoot && !visited.has(host.shadowRoot)) {
-                const shadowFocusables = findFocusablesDeep(host.shadowRoot, config, visited, seen);
-                results.push(...shadowFocusables);
+                results.push(...findFocusablesDeep(host.shadowRoot, config, visited, seen, budget));
             }
-        }
+        });
     } catch (e) {
-        log.warn('shadow DOM traversal error', e);
-    }
-
-    // Flatten slot assignments (distributed content)
-    try {
-        const slots = (root as Element | Document).querySelectorAll('slot');
-        for (const slot of slots as NodeListOf<HTMLSlotElement>) {
-            const assigned = slot.assignedElements({ flatten: true });
-            for (const el of assigned) {
-                // O(1) duplicate check with Set
-                if (!seen.has(el) && el.matches && el.matches(focusableSelector)) {
-                    seen.add(el);
-                    results.push(el as HTMLElement);
-                }
-                // Also check shadow roots of assigned elements
-                if (el.shadowRoot && config.traverseShadowDom && !visited.has(el.shadowRoot)) {
-                    const nestedFocusables = findFocusablesDeep(el.shadowRoot, config, visited, seen);
-                    results.push(...nestedFocusables);
-                }
-            }
-        }
-    } catch {
-        // Slots may not be supported or accessible
+        log.warn('deep DOM traversal error', e);
     }
 
     return results;
@@ -126,18 +145,44 @@ export function detectVirtualContainers(config: Partial<SpatialNavConfig>): HTML
 
     const selectors = config.virtualContainerSelectors || [];
     const containers: HTMLElement[] = [];
+    if (selectors.length === 0) {
+        return containers;
+    }
 
-    for (const selector of selectors) {
+    // Validate selectors once on a detached probe (matches() throws on invalid
+    // syntax without touching the document), then find matches in a single lazy,
+    // budget-bounded walk testing the COMBINED selector list. This avoids
+    // querySelectorAll's full match-list materialization — a page matching many
+    // of the (default-on) virtual-container selectors cannot force a huge
+    // allocation during sentinel setup — while staying one matches() per element
+    // regardless of how many selectors are configured.
+    const probe = document.createElement('div');
+    const valid = selectors.filter((s) => {
         try {
-            const found = document.querySelectorAll(selector);
-            for (const el of Array.from(found) as HTMLElement[]) {
-                if (!containers.includes(el)) {
-                    containers.push(el);
+            probe.matches(s);
+            return true;
+        } catch {
+            return false;
+        }
+    });
+    if (valid.length === 0) {
+        return containers;
+    }
+    const combined = valid.join(', ');
+
+    const seen = new Set<HTMLElement>();
+    try {
+        walkElementsBounded(document, { nodes: MAX_SCAN_NODES }, (el) => {
+            if (el.matches(combined)) {
+                const host = el as HTMLElement;
+                if (!seen.has(host)) {
+                    seen.add(host);
+                    containers.push(host);
                 }
             }
-        } catch {
-            // Invalid selector, skip
-        }
+        });
+    } catch (e) {
+        log.warn('virtual container scan failed', e);
     }
 
     return containers;
@@ -376,6 +421,30 @@ export function describeElement(el: Element | null): string {
 }
 
 /**
+ * Upper bound on focusable candidates processed per refresh. Each candidate
+ * incurs a `getComputedStyle` plus geometry/group work in the loop below, so an
+ * uncapped list would let a hostile page that renders millions of focusable
+ * elements turn every focus refresh into a denial of service. Set far above any
+ * realistic page (you cannot meaningfully D-pad through tens of thousands of
+ * targets anyway), so legitimate content is never truncated.
+ */
+export const MAX_FOCUSABLE_NODES = 50_000;
+
+/**
+ * Truncate the focusable-candidate list to `max`, warning once on overflow.
+ * Returns the original array reference when under the cap (no copy on the hot
+ * path). Final guard on the per-node processing loop, after the bounded scan
+ * (which already caps elements visited) and any iframe additions.
+ */
+export function capFocusableNodes<T>(nodes: T[], max: number = MAX_FOCUSABLE_NODES): T[] {
+    if (nodes.length <= max) {
+        return nodes;
+    }
+    log.warn(`focusable candidates (${nodes.length}) exceed cap ${max}; truncating`);
+    return nodes.slice(0, max);
+}
+
+/**
  * Refresh the list of focusable elements in the state.
  * Scans DOM for elements matching focusableSelector and updates geometry.
  * Supports Shadow DOM traversal and virtual scroll detection.
@@ -386,39 +455,59 @@ export function refreshFocusables(state: SpatialNavState): void {
     const startTime = performance.now(); // TODO 4: Performance monitoring
     const config = state.config;
 
-    // Use Shadow DOM traversal if enabled, otherwise standard querySelectorAll
+    // Use Shadow DOM traversal if enabled, otherwise a lazy bounded light-DOM scan.
     let nodes: HTMLElement[];
     if (config.traverseShadowDom) {
         nodes = findFocusablesDeep(document, config);
         log.debug(`shadow DOM traversal found ${nodes.length} focusables`);
     } else {
-        nodes = Array.from(document.querySelectorAll(focusableSelector)) as HTMLElement[];
+        // Lazy, budget-bounded scan (rather than querySelectorAll, which
+        // materializes the full match list) so a hostile page cannot force a
+        // complete DOM enumeration before the cap below.
+        const collected: HTMLElement[] = [];
+        walkElementsBounded(document, { nodes: MAX_SCAN_NODES }, (el) => {
+            if (el.matches(focusableSelector)) {
+                collected.push(el as HTMLElement);
+            }
+        });
+        nodes = collected;
     }
 
     log.debug(`candidate nodes found: ${nodes.length}`);
 
-    // Add iframes if iframe support is enabled
+    // Add iframes if iframe support is enabled. Lazy bounded scan (rather than
+    // querySelectorAll, which materializes the full match list) so a hostile page
+    // cannot force a complete enumeration on this opt-in path either.
     if (config.iframeSupport && config.iframeSupport.enabled) {
         try {
-            const iframeNodes = Array.from(
-                document.querySelectorAll(config.iframeSupport.selector || 'iframe')
-            ) as HTMLElement[];
-            iframeNodes.forEach((iframe) => {
-                if (!nodes.includes(iframe)) {
-                    nodes.push(iframe);
+            const selector = config.iframeSupport.selector || 'iframe';
+            const existing = new Set<HTMLElement>(nodes);
+            walkElementsBounded(document, { nodes: MAX_SCAN_NODES }, (el) => {
+                if (el.matches(selector) && !existing.has(el as HTMLElement)) {
+                    existing.add(el as HTMLElement);
+                    nodes.push(el as HTMLElement);
                 }
             });
         } catch (err) {
             log.warn('iframe selector failed', err);
         }
     }
+
+    // Bound the candidate list before the per-node getComputedStyle/geometry
+    // pass below — without this, a page rendering millions of focusable elements
+    // would make every refresh a DoS.
+    nodes = capFocusableNodes(nodes);
+
     const results: FocusableEntry[] = [];
 
     // Reset groups for fresh discovery
     // We keep the objects if possible to preserve state (lastFocused), but for now simpler to rebuild
     // TODO: Optimize to preserve group state across refreshes
-    const oldGroups = state.focusGroups || {};
-    state.focusGroups = {};
+    const oldGroups = state.focusGroups || Object.create(null);
+    // Null-prototype map — focus-group ids are page-controlled (`data-focus-group`),
+    // so a plain `{}` would let keys like `__proto__`/`constructor` resolve to
+    // inherited members and throw on `group.addMember`. See core/state.ts.
+    state.focusGroups = Object.create(null);
 
     for (let i = 0; i < nodes.length; i++) {
         const el = nodes[i];

@@ -6,7 +6,6 @@
  */
 
 import { createLogger } from './logger';
-import { safeJson } from './json';
 
 const log = createLogger('Bridge');
 
@@ -85,7 +84,8 @@ export async function sendBridgeMessage<T = unknown>(
 
     try {
         if (options.debug) {
-            log.debug(`Sending message: ${safeJson(message)}`);
+            // Log the message TYPE only — never the body (may carry URLs/coords).
+            log.debug(`Sending message type: ${String((message as { type?: unknown } | null)?.type)}`);
         }
 
         if (isFirefoxStyle()) {
@@ -95,7 +95,7 @@ export async function sendBridgeMessage<T = unknown>(
                 try {
                     const response = await result;
                     if (options.debug) {
-                        log.debug(`Response (promise): ${safeJson(response)}`);
+                        log.debug('Response received (promise)');
                     }
                     return { success: true, response };
                 } catch (error) {
@@ -118,7 +118,7 @@ export async function sendBridgeMessage<T = unknown>(
                         resolve({ success: false, error: errorMessage });
                     } else {
                         if (options.debug) {
-                            log.debug(`Response (callback): ${safeJson(typedResponse)}`);
+                            log.debug('Response received (callback)');
                         }
                         resolve({ success: true, response: typedResponse });
                     }

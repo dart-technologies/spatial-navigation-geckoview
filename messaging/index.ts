@@ -11,7 +11,6 @@ export type {
     OutboundMessageType,
     InboundMessageType,
     InitMessage,
-    FocusChangeMessage,
     FocusExitMessage,
     ConfigUpdateMessage,
     NavigateMessage,

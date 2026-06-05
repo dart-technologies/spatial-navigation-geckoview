@@ -1,4 +1,4 @@
-(function () {
+var SpatialNavigation = (function (exports) {
     'use strict';
 
     /**
@@ -601,7 +601,7 @@
         window.flutterFocusState = state;
         // Core navigation state
         state.config = config;
-        state.version = '3.1.0';
+        state.version = '3.2.0';
         state.currentIndex = typeof state.currentIndex === 'number' ? state.currentIndex : -1;
         state.initialized = !!state.initialized;
         state.handlersAttached = !!state.handlersAttached;
@@ -615,7 +615,12 @@
         // Focus tracking arrays
         state.focusables = Array.isArray(state.focusables) ? state.focusables : [];
         state.focusableElements = Array.isArray(state.focusableElements) ? state.focusableElements : [];
-        state.focusGroups = state.focusGroups || {};
+        // Null-prototype map: focus-group ids come from the page's `data-focus-group`
+        // attribute (attacker-controlled). A plain `{}` would resolve keys like
+        // `__proto__`/`constructor` to inherited members, and the truthy result
+        // would skip group creation and then throw on `group.addMember`, aborting
+        // every keypress. A prototype-less map makes such keys resolve to undefined.
+        state.focusGroups = state.focusGroups || Object.create(null);
         state.lastRefreshTime = state.lastRefreshTime || 0;
         state.focusableCount = state.focusableCount || 0;
         // Preview/animation state
@@ -1235,6 +1240,7 @@ body *:focus, body *:focus-visible {
         if (!state.overlay)
             return;
         // Only show the runtime label in debug mode.
+        /* c8 ignore next */ // dead under tsx (isDebugActive() returns true); production bundles fold this to a literal early return
         if (!isDebugActive()) {
             state.overlay.removeAttribute(runtimeAttr);
             return;
@@ -1254,6 +1260,7 @@ body *:focus, body *:focus-visible {
         const hud = shadow.getElementById(debugHudId);
         if (!hud)
             return;
+        /* c8 ignore next */ // dead under tsx (isDebugActive() returns true); production bundles fold this to a literal early return
         if (!isDebugActive()) {
             hud.style.display = 'none';
             return;
@@ -1309,6 +1316,7 @@ body *:focus, body *:focus-visible {
         const label = shadow.getElementById(overlayLabelId);
         if (!label)
             return;
+        /* c8 ignore next */ // dead under tsx (isDebugActive() returns true); production bundles fold this to a literal early return
         if (!isDebugActive()) {
             label.classList.remove('visible');
             return;
@@ -2549,8 +2557,40 @@ body *:focus, body *:focus-visible {
     const focusableSelector = 'a[href], a[aria-haspopup], [role="link"], button:not([disabled]), [role="button"], [aria-haspopup="true"], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
     // ===== Shadow DOM Traversal =====
     /**
+     * Upper bound on elements *visited* during a single focusable scan — light DOM
+     * and deep shadow traversal alike. Every discovery walks the tree lazily and
+     * stops here, so a hostile/pathological page (millions of nodes, deeply nested
+     * shadow roots) can never force a full DOM enumeration. Shared across the
+     * recursion via a budget object. Set far above any realistic page.
+     */
+    const MAX_SCAN_NODES = 100000;
+    /**
+     * Walk elements under `root` in document (pre-order) order via
+     * firstElementChild/nextElementSibling, invoking `visit` for each, until the
+     * shared `budget` is exhausted (then truncate with a warning). A lazy, bounded
+     * alternative to `querySelectorAll`: it never materializes a full NodeList, so a
+     * hostile, very large DOM cannot force a complete enumeration before any cap
+     * applies. (TreeWalker would be cleaner but is unreliable under happy-dom.)
+     */
+    function walkElementsBounded(root, budget, visit) {
+        const pending = [];
+        let node = root.firstElementChild;
+        while (node) {
+            if (budget.nodes <= 0) {
+                log$d.warn('DOM scan hit node budget; truncating');
+                break;
+            }
+            budget.nodes--;
+            visit(node);
+            if (node.nextElementSibling)
+                pending.push(node.nextElementSibling);
+            node = node.firstElementChild ?? pending.pop() ?? null;
+        }
+    }
+    /**
      * Find focusable elements including those in Shadow DOM.
-     * Recursively traverses shadow roots and flattens slot assignments.
+     * Recursively traverses shadow roots; slotted light-DOM content needs no special
+     * handling — it is the host's light children, which the same walk already visits.
      *
      * Performance optimizations:
      * - Uses Set<Element> for O(1) duplicate detection instead of Array.includes() O(n)
@@ -2563,7 +2603,7 @@ body *:focus, body *:focus-visible {
      * @param seen - Set of already-found elements (for deduplication)
      * @returns Array of focusable elements
      */
-    function findFocusablesDeep(root, config, visited = new Set(), seen = new Set()) {
+    function findFocusablesDeep(root, config, visited = new Set(), seen = new Set(), budget = { nodes: MAX_SCAN_NODES }) {
         const results = [];
         // Prevent infinite loops with circular shadow DOM references
         if (visited.has(root)) {
@@ -2573,58 +2613,37 @@ body *:focus, body *:focus-visible {
             // ShadowRoot
             visited.add(root);
         }
-        // Light DOM focusables
+        const traverseShadow = !!(config && config.traverseShadowDom);
+        // Single lazy, budget-bounded pre-order walk of this root's light tree. Per
+        // element: collect it if focusable and descend into its shadow root. One
+        // bounded walk (rather than querySelectorAll, which materializes the full
+        // match list up front) means a hostile, very large DOM can never force a
+        // complete enumeration before the shared node budget applies. The walk stays
+        // within this root; the recursion descends across shadow boundaries, sharing
+        // the same budget.
         try {
-            const lightFocusables = root.querySelectorAll(focusableSelector);
-            for (const el of lightFocusables) {
-                if (!seen.has(el)) {
-                    seen.add(el);
-                    results.push(el);
+            walkElementsBounded(root, budget, (element) => {
+                if (!seen.has(element) && element.matches(focusableSelector)) {
+                    seen.add(element);
+                    results.push(element);
                 }
-            }
-        }
-        catch {
-            // querySelectorAll may fail on some shadow roots
-        }
-        // Only traverse Shadow DOM if enabled (expensive operation)
-        if (!config || !config.traverseShadowDom) {
-            return results;
-        }
-        // Traverse into shadow roots
-        try {
-            const allElements = root.querySelectorAll('*');
-            for (const element of allElements) {
+                if (!traverseShadow) {
+                    return;
+                }
+                // Descend into the element's shadow root, sharing the budget. We do
+                // NOT separately resolve <slot> assignments: slotted content is the
+                // host's LIGHT-DOM children, which this same walk already visits in
+                // the host's containing tree (deduped via `seen`). Calling
+                // slot.assignedElements() would materialize the full assigned array
+                // up front — exactly what this bounded walk exists to avoid.
                 const host = element;
                 if (host.shadowRoot && !visited.has(host.shadowRoot)) {
-                    const shadowFocusables = findFocusablesDeep(host.shadowRoot, config, visited, seen);
-                    results.push(...shadowFocusables);
+                    results.push(...findFocusablesDeep(host.shadowRoot, config, visited, seen, budget));
                 }
-            }
+            });
         }
         catch (e) {
-            log$d.warn('shadow DOM traversal error', e);
-        }
-        // Flatten slot assignments (distributed content)
-        try {
-            const slots = root.querySelectorAll('slot');
-            for (const slot of slots) {
-                const assigned = slot.assignedElements({ flatten: true });
-                for (const el of assigned) {
-                    // O(1) duplicate check with Set
-                    if (!seen.has(el) && el.matches && el.matches(focusableSelector)) {
-                        seen.add(el);
-                        results.push(el);
-                    }
-                    // Also check shadow roots of assigned elements
-                    if (el.shadowRoot && config.traverseShadowDom && !visited.has(el.shadowRoot)) {
-                        const nestedFocusables = findFocusablesDeep(el.shadowRoot, config, visited, seen);
-                        results.push(...nestedFocusables);
-                    }
-                }
-            }
-        }
-        catch {
-            // Slots may not be supported or accessible
+            log$d.warn('deep DOM traversal error', e);
         }
         return results;
     }
@@ -2641,18 +2660,44 @@ body *:focus, body *:focus-visible {
         }
         const selectors = config.virtualContainerSelectors || [];
         const containers = [];
-        for (const selector of selectors) {
+        if (selectors.length === 0) {
+            return containers;
+        }
+        // Validate selectors once on a detached probe (matches() throws on invalid
+        // syntax without touching the document), then find matches in a single lazy,
+        // budget-bounded walk testing the COMBINED selector list. This avoids
+        // querySelectorAll's full match-list materialization — a page matching many
+        // of the (default-on) virtual-container selectors cannot force a huge
+        // allocation during sentinel setup — while staying one matches() per element
+        // regardless of how many selectors are configured.
+        const probe = document.createElement('div');
+        const valid = selectors.filter((s) => {
             try {
-                const found = document.querySelectorAll(selector);
-                for (const el of Array.from(found)) {
-                    if (!containers.includes(el)) {
-                        containers.push(el);
-                    }
-                }
+                probe.matches(s);
+                return true;
             }
             catch {
-                // Invalid selector, skip
+                return false;
             }
+        });
+        if (valid.length === 0) {
+            return containers;
+        }
+        const combined = valid.join(', ');
+        const seen = new Set();
+        try {
+            walkElementsBounded(document, { nodes: MAX_SCAN_NODES }, (el) => {
+                if (el.matches(combined)) {
+                    const host = el;
+                    if (!seen.has(host)) {
+                        seen.add(host);
+                        containers.push(host);
+                    }
+                }
+            });
+        }
+        catch (e) {
+            log$d.warn('virtual container scan failed', e);
         }
         return containers;
     }
@@ -2856,6 +2901,28 @@ body *:focus, body *:focus-visible {
         return el.tagName.toLowerCase() + id + classes + text;
     }
     /**
+     * Upper bound on focusable candidates processed per refresh. Each candidate
+     * incurs a `getComputedStyle` plus geometry/group work in the loop below, so an
+     * uncapped list would let a hostile page that renders millions of focusable
+     * elements turn every focus refresh into a denial of service. Set far above any
+     * realistic page (you cannot meaningfully D-pad through tens of thousands of
+     * targets anyway), so legitimate content is never truncated.
+     */
+    const MAX_FOCUSABLE_NODES = 50000;
+    /**
+     * Truncate the focusable-candidate list to `max`, warning once on overflow.
+     * Returns the original array reference when under the cap (no copy on the hot
+     * path). Final guard on the per-node processing loop, after the bounded scan
+     * (which already caps elements visited) and any iframe additions.
+     */
+    function capFocusableNodes(nodes, max = MAX_FOCUSABLE_NODES) {
+        if (nodes.length <= max) {
+            return nodes;
+        }
+        log$d.warn(`focusable candidates (${nodes.length}) exceed cap ${max}; truncating`);
+        return nodes.slice(0, max);
+    }
+    /**
      * Refresh the list of focusable elements in the state.
      * Scans DOM for elements matching focusableSelector and updates geometry.
      * Supports Shadow DOM traversal and virtual scroll detection.
@@ -2865,23 +2932,36 @@ body *:focus, body *:focus-visible {
     function refreshFocusables(state) {
         const startTime = performance.now(); // TODO 4: Performance monitoring
         const config = state.config;
-        // Use Shadow DOM traversal if enabled, otherwise standard querySelectorAll
+        // Use Shadow DOM traversal if enabled, otherwise a lazy bounded light-DOM scan.
         let nodes;
         if (config.traverseShadowDom) {
             nodes = findFocusablesDeep(document, config);
             log$d.debug(`shadow DOM traversal found ${nodes.length} focusables`);
         }
         else {
-            nodes = Array.from(document.querySelectorAll(focusableSelector));
+            // Lazy, budget-bounded scan (rather than querySelectorAll, which
+            // materializes the full match list) so a hostile page cannot force a
+            // complete DOM enumeration before the cap below.
+            const collected = [];
+            walkElementsBounded(document, { nodes: MAX_SCAN_NODES }, (el) => {
+                if (el.matches(focusableSelector)) {
+                    collected.push(el);
+                }
+            });
+            nodes = collected;
         }
         log$d.debug(`candidate nodes found: ${nodes.length}`);
-        // Add iframes if iframe support is enabled
+        // Add iframes if iframe support is enabled. Lazy bounded scan (rather than
+        // querySelectorAll, which materializes the full match list) so a hostile page
+        // cannot force a complete enumeration on this opt-in path either.
         if (config.iframeSupport && config.iframeSupport.enabled) {
             try {
-                const iframeNodes = Array.from(document.querySelectorAll(config.iframeSupport.selector || 'iframe'));
-                iframeNodes.forEach((iframe) => {
-                    if (!nodes.includes(iframe)) {
-                        nodes.push(iframe);
+                const selector = config.iframeSupport.selector || 'iframe';
+                const existing = new Set(nodes);
+                walkElementsBounded(document, { nodes: MAX_SCAN_NODES }, (el) => {
+                    if (el.matches(selector) && !existing.has(el)) {
+                        existing.add(el);
+                        nodes.push(el);
                     }
                 });
             }
@@ -2889,12 +2969,19 @@ body *:focus, body *:focus-visible {
                 log$d.warn('iframe selector failed', err);
             }
         }
+        // Bound the candidate list before the per-node getComputedStyle/geometry
+        // pass below — without this, a page rendering millions of focusable elements
+        // would make every refresh a DoS.
+        nodes = capFocusableNodes(nodes);
         const results = [];
         // Reset groups for fresh discovery
         // We keep the objects if possible to preserve state (lastFocused), but for now simpler to rebuild
         // TODO: Optimize to preserve group state across refreshes
-        const oldGroups = state.focusGroups || {};
-        state.focusGroups = {};
+        const oldGroups = state.focusGroups || Object.create(null);
+        // Null-prototype map — focus-group ids are page-controlled (`data-focus-group`),
+        // so a plain `{}` would let keys like `__proto__`/`constructor` resolve to
+        // inherited members and throw on `group.addMember`. See core/state.ts.
+        state.focusGroups = Object.create(null);
         for (let i = 0; i < nodes.length; i++) {
             const el = nodes[i];
             if (!el || typeof el.getBoundingClientRect !== 'function') {
@@ -3698,63 +3785,6 @@ body *:focus, body *:focus-visible {
     }
 
     /**
-     * JSON utilities for Spatial Navigation System
-     *
-     * Provides safe JSON serialization shared across all modules.
-     */
-    /**
-     * Safely serialize any value to JSON, handling Error objects and circular references.
-     * This is used for logging and debugging across the entire spatial navigation system.
-     *
-     * @param value - The value to serialize
-     * @returns JSON string representation
-     */
-    function safeJson(value) {
-        if (value instanceof Error) {
-            return JSON.stringify({
-                name: value.name,
-                message: value.message,
-                stack: value.stack,
-            });
-        }
-        if (value &&
-            typeof value === 'object' &&
-            'message' in value &&
-            typeof value.message === 'string') {
-            try {
-                return JSON.stringify({
-                    ...value,
-                    message: value.message,
-                });
-            }
-            catch {
-                // Fall through to best-effort stringify below.
-            }
-        }
-        try {
-            return JSON.stringify(value);
-        }
-        catch {
-            return String(value);
-        }
-    }
-    /**
-     * Safely get an attribute from an element, handling any exceptions.
-     *
-     * @param el - The element to get the attribute from
-     * @param attr - The attribute name
-     * @returns The attribute value or null
-     */
-    function safeGetAttr(el, attr) {
-        try {
-            return el.getAttribute(attr);
-        }
-        catch {
-            return null;
-        }
-    }
-
-    /**
      * Bridge messaging utilities for Spatial Navigation System
      *
      * Centralizes browser/chrome runtime messaging with consistent
@@ -3805,7 +3835,8 @@ body *:focus, body *:focus-visible {
         }
         try {
             if (options.debug) {
-                log$b.debug(`Sending message: ${safeJson(message)}`);
+                // Log the message TYPE only — never the body (may carry URLs/coords).
+                log$b.debug(`Sending message type: ${String(message?.type)}`);
             }
             if (isFirefoxStyle()) {
                 // Firefox-style Promise API
@@ -3814,7 +3845,7 @@ body *:focus, body *:focus-visible {
                     try {
                         const response = await result;
                         if (options.debug) {
-                            log$b.debug(`Response (promise): ${safeJson(response)}`);
+                            log$b.debug('Response received (promise)');
                         }
                         return { success: true, response };
                     }
@@ -3840,7 +3871,7 @@ body *:focus, body *:focus-visible {
                         }
                         else {
                             if (options.debug) {
-                                log$b.debug(`Response (callback): ${safeJson(typedResponse)}`);
+                                log$b.debug('Response received (callback)');
                             }
                             resolve({ success: true, response: typedResponse });
                         }
@@ -4570,6 +4601,34 @@ body *:focus, body *:focus-visible {
             return element;
         }
         return null;
+    }
+
+    /**
+     * JSON utilities for Spatial Navigation System
+     *
+     * Provides safe JSON serialization shared across all modules.
+     */
+    /**
+     * Safely serialize any value to JSON, handling Error objects and circular references.
+     * This is used for logging and debugging across the entire spatial navigation system.
+     *
+     * @param value - The value to serialize
+     * @returns JSON string representation
+     */
+    /**
+     * Safely get an attribute from an element, handling any exceptions.
+     *
+     * @param el - The element to get the attribute from
+     * @param attr - The attribute name
+     * @returns The attribute value or null
+     */
+    function safeGetAttr(el, attr) {
+        try {
+            return el.getAttribute(attr);
+        }
+        catch {
+            return null;
+        }
     }
 
     /**
@@ -6160,6 +6219,100 @@ body *:focus, body *:focus-visible {
     }
 
     /**
+     * Native-messaging app identifiers — the COMPLETE, hard-coded allowlist of
+     * GeckoView host applications this extension will exchange native messages
+     * with.
+     *
+     * SECURITY: this set is frozen and compile-time only. It MUST NOT be derived
+     * from any page-visible surface. A page-writable `window.spatialNavConfig
+     * .nativeAppId` previously let hostile web content reroute all outbound native
+     * traffic to an attacker-registered host (fixed in commit d23e1ab); keeping the
+     * allowlist in one frozen constant preserves that invariant while still letting
+     * the extension run under more than one host. To add support for a new host,
+     * append its registered native-messaging app id here and rebuild — nothing at
+     * runtime can extend this set.
+     *
+     * Order matters: it is the probe order used by the background relay and the
+     * content-script fallback. The first host that answers is locked in for the
+     * remainder of the session (only one host is registered on any given device,
+     * so the others reject without delivering the message).
+     */
+    const NATIVE_APP_IDS = Object.freeze(['flutter_geckoview', 'react-native-geckoview']);
+
+    /**
+     * Native-host sender: selects which GeckoView host to talk to from the
+     * hard-coded {@link NATIVE_APP_IDS} allowlist, with probe-and-lock.
+     *
+     * Used by both the background relay and the content-script `sendNativeMessage`
+     * fallback so the host-selection policy lives in exactly one place.
+     *
+     * SECURITY: candidate app ids come only from the compile-time allowlist — never
+     * from page-controlled input (see messaging/native-app-ids.ts). The probe sends
+     * the real message; because only one host is registered on a given device, the
+     * others reject WITHOUT delivering, so probing cannot leak a message to an
+     * unintended host.
+     */
+    /**
+     * Create a stateful native sender. The returned function probes the allowlist
+     * in order on first use and locks onto the first host whose promise resolves;
+     * subsequent calls reuse the locked host.
+     *
+     * Failure semantics mirror the raw primitive:
+     *  - A SYNCHRONOUS throw from the first/locked attempt propagates synchronously
+     *    (a broken API is fatal — we do not probe past it).
+     *  - An ASYNCHRONOUS rejection means "this host isn't registered" and advances
+     *    to the next candidate.
+     *
+     * @param appIds - candidate ids in probe order (defaults to the full allowlist;
+     *                 overridable only for tests).
+     */
+    function createNativeSender(appIds = NATIVE_APP_IDS) {
+        let resolvedAppId = null;
+        let probe = null;
+        return function sendToNative(sendNative, message) {
+            // Host already locked — reuse it directly.
+            if (resolvedAppId !== null) {
+                return sendNative(resolvedAppId, message);
+            }
+            // A probe is already in flight: wait for the lock, then send our OWN
+            // message to the chosen host. Do not start a second probe.
+            if (probe !== null) {
+                return probe.then((result) => result.ok ? sendNative(result.appId, message) : Promise.reject(result.error));
+            }
+            if (appIds.length === 0) {
+                return Promise.reject(new Error('createNativeSender: empty native app id allowlist'));
+            }
+            // We are the first caller: probe the allowlist with our message. The
+            // first attempt runs synchronously so a synchronous throw propagates.
+            let chain = sendNative(appIds[0], message).then((response) => {
+                resolvedAppId = appIds[0];
+                return response;
+            });
+            // Remaining candidates are tried only on async rejection.
+            for (let i = 1; i < appIds.length; i++) {
+                const appId = appIds[i];
+                chain = chain.catch(() => sendNative(appId, message).then((response) => {
+                    resolvedAppId = appId;
+                    return response;
+                }));
+            }
+            // Publish the lock for any sends that arrive while this probe runs.
+            // `chain` already set `resolvedAppId` before it resolves, so concurrent
+            // callers read the locked id; on total failure they get the same error
+            // and we reset so the next send re-probes. The onRejected handler also
+            // consumes `chain`'s rejection, so the first caller's returned `chain` is
+            // the only place the error surfaces (handled by that caller).
+            probe = chain.then(() => ({ ok: true, appId: resolvedAppId }), (error) => {
+                probe = null;
+                return { ok: false, error };
+            });
+            // The first caller gets the probe's own response (and a synchronous
+            // throw above already propagated before `probe` was assigned).
+            return chain;
+        };
+    }
+
+    /**
      * GeckoView Messaging Adapter
      *
      * Implements native messaging for the GeckoView WebExtension environment.
@@ -6187,16 +6340,18 @@ body *:focus, body *:focus-visible {
             return browser;
         return undefined;
     }
-    /**
-     * Native-messaging app identifier.
-     *
-     * Hardcoded — NOT configurable from page-visible surface. A web-page-writable
-     * `window.spatialNavConfig.nativeAppId` previously let untrusted content
-     * redirect all outbound native traffic to an attacker-registered host. Keep
-     * this in lockstep with `NATIVE_APP_ID` in `background.ts`.
-     */
-    const NATIVE_APP_ID = 'flutter_geckoview';
     const PORT_NAME = 'spatial-nav-content';
+    /**
+     * Runtime type guard for messages arriving on the native port. The native host
+     * is trusted, so this is defense-in-depth: a malformed payload (missing or
+     * non-string `type`) is dropped at the boundary instead of being cast and
+     * dispatched downstream.
+     */
+    function isInboundMessage(message) {
+        return (typeof message === 'object' &&
+            message !== null &&
+            typeof message.type === 'string');
+    }
     /** Cap reconnect backoff so a flapping native peer doesn't push delay to infinity. */
     const MAX_RECONNECT_DELAY_MS = 30000;
     /** Initial reconnect backoff (doubled on each failure, capped at MAX_RECONNECT_DELAY_MS). */
@@ -6219,6 +6374,8 @@ body *:focus, body *:focus-visible {
             this.messageQueue = [];
             this.reconnectAttempts = 0;
             this.reconnectTimer = null;
+            /** Probe-and-lock sender over the hard-coded native-app-id allowlist. */
+            this.sendToNative = createNativeSender();
         }
         isAvailable() {
             const b = getBrowser();
@@ -6235,6 +6392,10 @@ body *:focus, body *:focus-visible {
                 if (b?.runtime?.connect) {
                     this.port = b.runtime.connect({ name: PORT_NAME });
                     this.port.onMessage.addListener((message) => {
+                        if (!isInboundMessage(message)) {
+                            log$3.warn('dropping malformed inbound message');
+                            return;
+                        }
                         this.handleMessage(message);
                     });
                     this.port.onDisconnect.addListener(() => {
@@ -6283,24 +6444,24 @@ body *:focus, body *:focus-visible {
                     this.port = null;
                 }
             }
-            // Fallback to sendNativeMessage with the hardcoded app id.
+            // Fallback to sendNativeMessage, selecting the host from the hard-coded
+            // NATIVE_APP_IDS allowlist via probe-and-lock (never page-controlled).
             //
-            // `sendNativeMessage` is promise-returning in WebExtensions, so a
-            // synchronous try/catch only catches launch-path errors (e.g. the
-            // function is missing). The async failure case (native host not
-            // installed, runtime rejects the message) lands as a promise
-            // rejection — we attach `.catch` so the message gets queued for
-            // retry and we never leak an unhandled-rejection warning.
+            // `sendToNative` is promise-returning, so a synchronous try/catch only
+            // catches launch-path errors (e.g. the API throws synchronously). The
+            // async failure case (native host not installed, runtime rejects the
+            // message) lands as a promise rejection — we attach `.catch` so the
+            // message gets queued for retry and we never leak an unhandled rejection.
             const b = getBrowser();
-            if (b?.runtime?.sendNativeMessage) {
+            const runtime = b?.runtime;
+            if (runtime?.sendNativeMessage) {
+                // Bound closure preserves `this === runtime` for the native call.
+                const sendNative = (appId, msg) => runtime.sendNativeMessage(appId, msg);
                 try {
-                    const result = b.runtime.sendNativeMessage(NATIVE_APP_ID, fullMessage);
-                    if (result && typeof result.then === 'function') {
-                        result.catch((err) => {
-                            log$3.warn('sendNativeMessage rejected, requeueing', err);
-                            this.queueMessage(fullMessage);
-                        });
-                    }
+                    this.sendToNative(sendNative, fullMessage).catch((err) => {
+                        log$3.warn('sendNativeMessage rejected, requeueing', err);
+                        this.queueMessage(fullMessage);
+                    });
                     return true;
                 }
                 catch (err) {
@@ -6537,7 +6698,7 @@ body *:focus, body *:focus-visible {
     const log = createLogger('Main');
     const STYLE_ID = 'spatnav-focus-styles';
     const OVERLAY_HOST_ID = 'spatnav-focus-host';
-    const VERSION = '3.1.0';
+    const VERSION = '3.2.0';
     // Debounce window for the pageshow re-init handler. Below this threshold we
     // treat consecutive events as the same logical navigation.
     const PAGESHOW_DEBOUNCE_MS = 100;
@@ -6816,8 +6977,14 @@ body *:focus, body *:focus-visible {
         attachHandlers(state);
         // 10. Attach mutation observer
         attachMutationObserver(state);
-        // 11. Initialize debug API
-        initDebugApi(state);
+        // 11. Initialize debug API — gated on build-time DEBUG so the production
+        // bundle does not expose `window.spatialNavDebug` (page-callable navigation
+        // control) or write focused-element descriptions into `document.title`.
+        // Terser dead-code-eliminates the whole call in release builds. Mirrors the
+        // `isDebugActive()` gate in core/overlay.ts.
+        {
+            initDebugApi(state);
+        }
         // 12. Install WICG polyfill
         installWICGPolyfill(state);
         // 13. Expose public API
@@ -7046,7 +7213,14 @@ body *:focus, body *:focus-visible {
             reinitializeAfterPageshow(state);
         });
     }
-    initSpatialNavigation();
+    // Gate auto-init so integration tests can import this module without side effects.
+    if (!globalThis.__SPATNAV_NO_AUTO_INIT__) {
+        initSpatialNavigation();
+    }
 
-})();
+    exports.initSpatialNavigation = initSpatialNavigation;
+
+    return exports;
+
+})({});
 //# sourceMappingURL=spatial_navigation.debug.js.map

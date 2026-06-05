@@ -8,15 +8,19 @@ import type { DirectionName } from '../core/config';
 
 /**
  * Message types sent from the extension to the native layer.
+ *
+ * Backed by a frozen runtime array so the background relay can allowlist
+ * incoming content-script messages by `type` before forwarding them to the
+ * native host (a malformed/unknown type is dropped, not relayed).
  */
-export type OutboundMessageType =
-    | 'spatialNavInit'
-    | 'focusChange'
-    | 'focusExit'
-    | 'inputModalityChange'
-    | 'tabClosed'
-    | 'extensionInstalled'
-    | 'extensionUpdated';
+export const OUTBOUND_MESSAGE_TYPES = Object.freeze([
+    'spatialNavInit',
+    'focusExit',
+    'inputModalityChange',
+    'simulateClick',
+] as const);
+
+export type OutboundMessageType = (typeof OUTBOUND_MESSAGE_TYPES)[number];
 
 /**
  * Message types received from the native layer.
@@ -46,16 +50,6 @@ export interface InitMessage extends OutboundMessage {
 }
 
 /**
- * Focus change message sent when navigation moves focus.
- */
-export interface FocusChangeMessage extends OutboundMessage {
-    type: 'focusChange';
-    direction: DirectionName;
-    fromElement?: string;
-    toElement?: string;
-}
-
-/**
  * Focus exit message sent when navigation hits a boundary.
  */
 export interface FocusExitMessage extends OutboundMessage {
@@ -76,6 +70,20 @@ export interface FocusExitMessage extends OutboundMessage {
 export interface InputModalityChangeMessage extends OutboundMessage {
     type: 'inputModalityChange';
     modality: 'touch' | 'hardware-nav';
+}
+
+/**
+ * Native click-injection request. Asks the host to dispatch a synthetic
+ * MotionEvent (tap) at the given PHYSICAL-pixel coordinates — used to activate
+ * elements on hosts that require a real native click, and for the menu-close
+ * outside-tap fallback. Coordinates are already device-pixel-scaled by the
+ * sender.
+ */
+export interface SimulateClickMessage extends OutboundMessage {
+    type: 'simulateClick';
+    x: number;
+    y: number;
+    debug?: Record<string, unknown>;
 }
 
 /**
