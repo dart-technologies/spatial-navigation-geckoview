@@ -22,15 +22,23 @@ import { minify } from 'terser';
  *   - Not minified; sourcemaps emitted.
  */
 
-const makeTypescriptPlugin = () =>
+// One TS plugin instance per output directory. @rollup/plugin-typescript v12
+// requires the compiler `outDir` to live inside the Rollup output's directory,
+// so each build that targets a non-dist/ folder (extension/, e2e/fixtures/) gets
+// its own plugin with a matching `outDir`. `outputToFilesystem: false` keeps the
+// plugin from writing transpiled files into those folders — Rollup emits the
+// bundle. Both are harmless on v11.
+const makeTypescriptPlugin = (outDir = 'dist') =>
     typescript({
         tsconfig: './tsconfig.json',
         declaration: false,
         declarationDir: undefined,
         noEmit: false,
+        outputToFilesystem: false,
         compilerOptions: {
             noEmit: false,
             declaration: false,
+            outDir,
         },
     });
 
@@ -94,9 +102,13 @@ const terserPlugin = (reserved = []) => ({
     },
 });
 
-const productionPlugins = () => [makeReplacePlugin(true), makeTypescriptPlugin(), terserPlugin()];
+const productionPlugins = (outDir = 'dist') => [
+    makeReplacePlugin(true),
+    makeTypescriptPlugin(outDir),
+    terserPlugin(),
+];
 
-const debugPlugins = () => [makeReplacePlugin(false), makeTypescriptPlugin()];
+const debugPlugins = (outDir = 'dist') => [makeReplacePlugin(false), makeTypescriptPlugin(outDir)];
 
 export default [
     // UMD bundle
@@ -125,73 +137,87 @@ export default [
 
     // GeckoView extension IIFE bundle — emitted to dist/, extension/, and the
     // Playwright e2e fixtures folder so consumers loading the extension folder
-    // directly, and the e2e suite, all run the same freshly-built code. The
-    // e2e fixture used to be hand-maintained and silently drifted from source.
+    // directly, and the e2e suite, all run the same freshly-built code. Split
+    // into one single-output build per target directory (rather than a single
+    // multi-output build) so each gets a TS plugin whose `outDir` matches its
+    // folder. Output bytes are identical to the old multi-output emit.
     {
         input: 'main.ts',
-        output: [
-            {
-                file: 'dist/spatial-navigation.extension.js',
-                format: 'iife',
-                name: 'SpatialNavigation',
-                strict: true,
-            },
-            {
-                file: 'extension/spatial_navigation.js',
-                format: 'iife',
-                name: 'SpatialNavigation',
-                strict: true,
-            },
-            {
-                file: 'e2e/fixtures/spatial-navigation.js',
-                format: 'iife',
-                name: 'SpatialNavigation',
-                strict: true,
-            },
-        ],
-        plugins: productionPlugins(),
+        output: {
+            file: 'dist/spatial-navigation.extension.js',
+            format: 'iife',
+            name: 'SpatialNavigation',
+            strict: true,
+        },
+        plugins: productionPlugins('dist'),
     },
-
-    // Debug bundle (unminified, sourcemaps, console preserved) — also dual-emitted.
     {
         input: 'main.ts',
-        output: [
-            {
-                file: 'dist/spatial-navigation.debug.js',
-                format: 'iife',
-                name: 'SpatialNavigation',
-                strict: true,
-                sourcemap: true,
-            },
-            {
-                file: 'extension/spatial_navigation.debug.js',
-                format: 'iife',
-                name: 'SpatialNavigation',
-                strict: true,
-                sourcemap: true,
-            },
-        ],
-        plugins: debugPlugins(),
+        output: {
+            file: 'extension/spatial_navigation.js',
+            format: 'iife',
+            name: 'SpatialNavigation',
+            strict: true,
+        },
+        plugins: productionPlugins('extension'),
+    },
+    {
+        input: 'main.ts',
+        output: {
+            file: 'e2e/fixtures/spatial-navigation.js',
+            format: 'iife',
+            name: 'SpatialNavigation',
+            strict: true,
+        },
+        plugins: productionPlugins('e2e/fixtures'),
     },
 
-    // Background script — dual-emitted for the same reason.
+    // Debug bundle (unminified, sourcemaps, console preserved) — dual-emitted to
+    // dist/ and extension/ as separate single-output builds (see above), so each
+    // sourcemap is generated natively with the correct output file name.
+    {
+        input: 'main.ts',
+        output: {
+            file: 'dist/spatial-navigation.debug.js',
+            format: 'iife',
+            name: 'SpatialNavigation',
+            strict: true,
+            sourcemap: true,
+        },
+        plugins: debugPlugins('dist'),
+    },
+    {
+        input: 'main.ts',
+        output: {
+            file: 'extension/spatial_navigation.debug.js',
+            format: 'iife',
+            name: 'SpatialNavigation',
+            strict: true,
+            sourcemap: true,
+        },
+        plugins: debugPlugins('extension'),
+    },
+
+    // Background script — dual-emitted to dist/ and extension/ as separate builds.
     {
         input: 'background.ts',
-        output: [
-            {
-                file: 'dist/background.js',
-                format: 'iife',
-                name: 'SpatialNavBackground',
-                strict: true,
-            },
-            {
-                file: 'extension/background.js',
-                format: 'iife',
-                name: 'SpatialNavBackground',
-                strict: true,
-            },
-        ],
-        plugins: productionPlugins(),
+        output: {
+            file: 'dist/background.js',
+            format: 'iife',
+            name: 'SpatialNavBackground',
+            strict: true,
+        },
+        plugins: productionPlugins('dist'),
+    },
+    {
+        input: 'background.ts',
+        output: {
+            file: 'extension/background.js',
+            format: 'iife',
+            name: 'SpatialNavBackground',
+            strict: true,
+        },
+        plugins: productionPlugins('extension'),
     },
 
     // Subpath: core-only bundle (UMD + ESM)
