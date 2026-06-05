@@ -5,6 +5,24 @@ All notable changes to the Spatial Navigation for GeckoView extension will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Post-3.2.0 hardening, tooling, and documentation. No web-page or messaging API changes.
+
+### Security
+
+- **Compile-time relay-type guard.** `SimulateClickMessage` now extends the `OutboundMessage` union, so omitting a new outbound type from the `OUTBOUND_MESSAGE_TYPES` allowlist fails type-checking instead of being silently dropped by the background relay at runtime. The remaining element-scoped DOM scans were moved onto the shared budget-bounded `walkElementsBounded` walker, completing the bounded-scan work from 3.2.0.
+- **Auto-init gated at build time.** The content script's auto-initialization is now gated on build-time `NODE_ENV` (folded out of the production bundle) rather than a page-reachable `__SPATNAV_NO_AUTO_INIT__` global, removing a page-controllable toggle over the extension's startup.
+
+### Changed
+
+- **Supply-chain & release tooling.** Added OpenSSF Scorecard and dependency-review CI workflows (with a Scorecard badge in the README), and a `scripts/release.mjs` helper that bumps every version site, dates this changelog, syncs the lockfile + manifest, and rebuilds bundles. Bumped `github/codeql-action` to v4.
+
+### Documentation
+
+- **Published API reference.** The TypeDoc API reference is now generated and deployed to GitHub Pages on every push to `main` (`.github/workflows/docs.yml`), linked from the README and docs index. The docs build is warning-free.
+- **Architecture & ADRs.** Added [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (component map, the two outbound message paths, native-host selection, trust boundaries) and [`docs/adr/0001-commit-built-bundles.md`](docs/adr/0001-commit-built-bundles.md) (rationale for committing built bundles).
+
 ## [3.2.0] — 2026-06-05
 
 A security-hardening release plus multi-host support. No breaking changes to web-page API; the only removal is the **debug API in production builds** (see Security). All changes are additive for host integrators.
