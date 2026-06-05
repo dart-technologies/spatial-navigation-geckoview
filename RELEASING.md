@@ -52,6 +52,12 @@ The tarball must include `dist/`, `extension/`, `README.md`, `CHANGELOG.md`, `LI
 
 ## Cutting a release
 
+> **Shortcut:** `npm run release 3.3.0` (or `node scripts/release.mjs 3.3.0`)
+> automates steps 1–3 below — it bumps every version site, dates the
+> `## [Unreleased]` CHANGELOG section, syncs the lockfile + manifest, rebuilds
+> bundles, and prints the commit/tag/push commands. Add `--dry-run` to preview.
+> The manual steps below remain the source of truth for what it does.
+
 ### 1. Bump version
 
 Update all four locations listed above to the new version. Example for a `3.1.0` cut:

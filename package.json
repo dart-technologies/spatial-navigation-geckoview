@@ -45,6 +45,7 @@
     "build:all": "npm run build && npm run sync:manifest",
     "build:types": "tsc --emitDeclarationOnly --outDir dist/types",
     "sync:manifest": "node scripts/sync-manifest-version.mjs",
+    "release": "node scripts/release.mjs",
     "test": "NODE_ENV=test node --import tsx --test __tests__/*.test.ts",
     "test:watch": "NODE_ENV=test node --import tsx --test --watch __tests__/*.test.ts",
     "test:visual": "npx playwright test",
