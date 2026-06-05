@@ -248,6 +248,51 @@ describe('GeckoViewMessagingAdapter', () => {
         );
     });
 
+    test('per-adapter native sender locks the host across concurrent fallback sends', async () => {
+        const calls: string[] = [];
+        let release: () => void = () => {};
+        const gate = new Promise<void>((r) => {
+            release = r;
+        });
+        await withMockBrowser(
+            {
+                // No `connect` → the adapter uses the sendNativeMessage fallback,
+                // which routes through this adapter's own probe-and-lock sender.
+                sendNativeMessage: (appId: string) => {
+                    calls.push(appId);
+                    return appId === 'react-native-geckoview'
+                        ? gate.then(() => 'ok')
+                        : Promise.reject(new Error('not registered'));
+                },
+            },
+            async () => {
+                const a = new GeckoViewMessagingAdapter();
+                await a.connect();
+
+                // Three sends fire before the first probe resolves.
+                a.send({ type: 'spatialNavInit' } as OutboundMessage);
+                a.send({ type: 'focusExit' } as OutboundMessage);
+                a.send({ type: 'inputModalityChange' } as OutboundMessage);
+                await new Promise((r) => setTimeout(r, 0));
+
+                // The shared probe hit flutter once (it rejected) then locked onto
+                // react-native; the other two sends parked on the lock instead of
+                // re-probing flutter from the top.
+                assert.equal(
+                    calls.filter((c) => c === 'flutter_geckoview').length,
+                    1,
+                    'flutter probed once, not once per send'
+                );
+
+                release();
+                await new Promise((r) => setTimeout(r, 0));
+
+                // All three messages were delivered to the single locked host.
+                assert.equal(calls.filter((c) => c === 'react-native-geckoview').length, 3);
+            }
+        );
+    });
+
     test('disconnect clears queue and reconnect timer', async () => {
         await withMockBrowser({ connect: () => port }, async () => {
             const a = new GeckoViewMessagingAdapter();
