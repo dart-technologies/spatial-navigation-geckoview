@@ -14,6 +14,7 @@ import { scheduleOverlayUpdate } from '../utils/focus-helpers';
 import { clampToViewport } from './click_utils';
 import { createLogger } from '../utils/logger';
 import type { SpatialNavState } from '../core/state';
+import type { SimulateClickMessage } from '../messaging/types';
 import type { BrowserRuntime } from '../globals';
 
 const log = createLogger('MenuToggle');
@@ -388,7 +389,7 @@ export function tryCloseOpenMenuToggle(options: {
                     dpr,
                     final: { x: physicalX, y: physicalY },
                 });
-                runtime.sendMessage({
+                const message: SimulateClickMessage = {
                     type: 'simulateClick',
                     x: physicalX,
                     y: physicalY,
@@ -399,7 +400,8 @@ export function tryCloseOpenMenuToggle(options: {
                         hit: describeElement(outsideNow.hit),
                         context: 'menuToggleClose',
                     },
-                });
+                };
+                runtime.sendMessage(message);
             } catch (e) {
                 log.warn('native outside-click failed, using JS fallback', e);
             }

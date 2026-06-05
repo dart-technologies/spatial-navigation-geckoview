@@ -909,7 +909,13 @@ var SpatialNavigation = (function (exports) {
         const mediaCandidates = element.querySelectorAll(mediaSelector);
         if (mediaCandidates.length > 0) {
             const visibleMedia = [];
-            for (let i = 0; i < mediaCandidates.length; i++) {
+            // Bound the per-child getComputedStyle/rect work: only the
+            // single-dominant-media case shrinks the ring, so a pathological element
+            // with a huge media subtree can't make this scan expensive. Cap the scan,
+            // and stop as soon as a second visible media element is found.
+            const MAX_MEDIA_CANDIDATES = 1000;
+            const limit = Math.min(mediaCandidates.length, MAX_MEDIA_CANDIDATES);
+            for (let i = 0; i < limit; i++) {
                 const child = mediaCandidates[i];
                 // Skip explicitly-hidden children.
                 if (child.getAttribute('aria-hidden') === 'true')
@@ -929,6 +935,8 @@ var SpatialNavigation = (function (exports) {
                     // No window / non-browser env — accept the child.
                 }
                 visibleMedia.push(child);
+                if (visibleMedia.length > 1)
+                    break;
             }
             if (visibleMedia.length === 1) {
                 const childRect = safeGetBoundingClientRect(visibleMedia[0]);
@@ -5024,7 +5032,7 @@ body *:focus, body *:focus-visible {
                         dpr,
                         final: { x: physicalX, y: physicalY },
                     });
-                    runtime.sendMessage({
+                    const message = {
                         type: 'simulateClick',
                         x: physicalX,
                         y: physicalY,
@@ -5035,7 +5043,8 @@ body *:focus, body *:focus-visible {
                             hit: describeElement(outsideNow.hit),
                             context: 'menuToggleClose',
                         },
-                    });
+                    };
+                    runtime.sendMessage(message);
                 }
                 catch (e) {
                     log$8.warn('native outside-click failed, using JS fallback', e);
@@ -6807,7 +6816,14 @@ body *:focus, body *:focus-visible {
         if (!Element.prototype.focusableAreas) {
             const selector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
             Element.prototype.focusableAreas = function (options = { mode: 'visible' }) {
-                const all = Array.from(this.querySelectorAll(selector));
+                // Bounded lazy scan (page-callable API): cap elements visited and
+                // matches collected so a pathological subtree can't force a full
+                // materialization here either.
+                const all = [];
+                walkElementsBounded(this, { nodes: MAX_SCAN_NODES }, (el) => {
+                    if (all.length < MAX_FOCUSABLE_NODES && el.matches(selector))
+                        all.push(el);
+                });
                 if (options.mode === 'all')
                     return all;
                 return all.filter((el) => {

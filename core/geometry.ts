@@ -233,7 +233,13 @@ export function calculateVisualRect(element: HTMLElement): DOMRect {
     const mediaCandidates = element.querySelectorAll(mediaSelector);
     if (mediaCandidates.length > 0) {
         const visibleMedia: HTMLElement[] = [];
-        for (let i = 0; i < mediaCandidates.length; i++) {
+        // Bound the per-child getComputedStyle/rect work: only the
+        // single-dominant-media case shrinks the ring, so a pathological element
+        // with a huge media subtree can't make this scan expensive. Cap the scan,
+        // and stop as soon as a second visible media element is found.
+        const MAX_MEDIA_CANDIDATES = 1000;
+        const limit = Math.min(mediaCandidates.length, MAX_MEDIA_CANDIDATES);
+        for (let i = 0; i < limit; i++) {
             const child = mediaCandidates[i] as HTMLElement;
             // Skip explicitly-hidden children.
             if (child.getAttribute('aria-hidden') === 'true') continue;
@@ -249,6 +255,7 @@ export function calculateVisualRect(element: HTMLElement): DOMRect {
                 // No window / non-browser env — accept the child.
             }
             visibleMedia.push(child);
+            if (visibleMedia.length > 1) break;
         }
         if (visibleMedia.length === 1) {
             const childRect = safeGetBoundingClientRect(visibleMedia[0]);

@@ -6,6 +6,7 @@
  */
 
 import { createLogger } from './logger';
+import type { SimulateClickMessage } from '../messaging/types';
 
 const log = createLogger('Bridge');
 
@@ -157,7 +158,7 @@ export async function sendSimulateClick(
     y: number,
     debug?: Record<string, unknown>
 ): Promise<BridgeResult> {
-    const message: { type: string; x: number; y: number; debug?: Record<string, unknown> } = {
+    const message: SimulateClickMessage = {
         type: 'simulateClick',
         x,
         y,

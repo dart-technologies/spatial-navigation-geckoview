@@ -29,6 +29,9 @@ import {
     attachVirtualScrollSentinels,
     setupAccessibilityAnnouncer,
     focusInitialElement,
+    walkElementsBounded,
+    MAX_SCAN_NODES,
+    MAX_FOCUSABLE_NODES,
 } from './utils/dom';
 import { attachHandlers, HANDLER_ID_ATTR } from './navigation/handlers';
 import { attachMutationObserver } from './utils/observer';
@@ -192,7 +195,13 @@ function installWICGPolyfill(state: SpatialNavState): void {
             this: Element,
             options: FocusableAreasOptions = { mode: 'visible' }
         ): Element[] {
-            const all = Array.from(this.querySelectorAll(selector)) as Element[];
+            // Bounded lazy scan (page-callable API): cap elements visited and
+            // matches collected so a pathological subtree can't force a full
+            // materialization here either.
+            const all: Element[] = [];
+            walkElementsBounded(this, { nodes: MAX_SCAN_NODES }, (el) => {
+                if (all.length < MAX_FOCUSABLE_NODES && el.matches(selector)) all.push(el);
+            });
             if (options.mode === 'all') return all;
 
             return all.filter((el) => {

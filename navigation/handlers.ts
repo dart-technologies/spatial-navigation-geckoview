@@ -30,6 +30,7 @@ import type { SpatialNavState } from '../core/state';
 import { clampToViewport, pickClickPoint } from './click_utils';
 import { isMenuToggleElement, tryCloseOpenMenuToggle } from './menu_toggle';
 import type { BrowserRuntime } from '../globals';
+import type { SimulateClickMessage } from '../messaging/types';
 
 import { scheduleOverlayUpdate, storePositionHint } from '../utils/focus-helpers';
 export { scheduleOverlayUpdate, storePositionHint };
@@ -368,7 +369,7 @@ function handleActivationKey(event: KeyboardEvent, state: SpatialNavState, handl
         });
 
         try {
-            const message: { type: string; x: number; y: number; debug?: object } = {
+            const message: SimulateClickMessage = {
                 type: 'simulateClick',
                 x: finalX,
                 y: finalY,
