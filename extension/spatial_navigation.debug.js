@@ -7229,8 +7229,11 @@ body *:focus, body *:focus-visible {
             reinitializeAfterPageshow(state);
         });
     }
-    // Gate auto-init so integration tests can import this module without side effects.
-    if (!globalThis.__SPATNAV_NO_AUTO_INIT__) {
+    // Gate auto-init so tests can import this module without side effects. Uses the
+    // build-time NODE_ENV (Rollup folds it to "production"/"development" in shipped
+    // bundles, so auto-init always runs in the content script) rather than a
+    // page-reachable global. The test runner sets NODE_ENV=test (see package.json).
+    {
         initSpatialNavigation();
     }
 

@@ -1,21 +1,19 @@
 /**
  * Integration tests for main.ts content-script orchestrator.
  *
- * main.ts auto-invokes initSpatialNavigation() at module load. The bottom
- * IIFE is gated behind `globalThis.__SPATNAV_NO_AUTO_INIT__` so test files
- * can import without side effects, then drive init explicitly.
+ * main.ts auto-invokes initSpatialNavigation() at module load, gated behind
+ * `process.env.NODE_ENV !== 'test'`. The test runner sets NODE_ENV=test (see
+ * package.json), so importing main.ts here has no side effects and we drive
+ * init explicitly.
  *
- * Because ESM modules are cached, we set the gate BEFORE the first import.
- * All tests in this file share the same module instance.
+ * Because ESM modules are cached, all tests in this file share the same
+ * module instance.
  */
 
 import { test, describe, before, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setupDomEnv, teardownDomEnv, installBrowserBridge, removeAllBridges } from './helpers/dom_env';
-
-// Set the auto-init gate BEFORE importing main.ts.
-(globalThis as { __SPATNAV_NO_AUTO_INIT__?: boolean }).__SPATNAV_NO_AUTO_INIT__ = true;
 
 let initSpatialNavigation: () => void;
 
