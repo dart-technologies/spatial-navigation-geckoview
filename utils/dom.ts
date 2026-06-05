@@ -452,7 +452,7 @@ export function capFocusableNodes<T>(nodes: T[], max: number = MAX_FOCUSABLE_NOD
  * @param state - Global state object
  */
 export function refreshFocusables(state: SpatialNavState): void {
-    const startTime = performance.now(); // TODO 4: Performance monitoring
+    const startTime = performance.now();
     const config = state.config;
 
     // Use Shadow DOM traversal if enabled, otherwise a lazy bounded light-DOM scan.
@@ -595,7 +595,7 @@ export function refreshFocusables(state: SpatialNavState): void {
         }
     }
 
-    // TODO 4: Performance monitoring (end)
+    // Record refresh timing into state.perf and warn on slow refreshes.
     const duration = performance.now() - startTime;
     if (state.perf) {
         state.perf.refreshCount++;

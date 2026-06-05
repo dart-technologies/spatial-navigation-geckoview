@@ -2938,7 +2938,7 @@ body *:focus, body *:focus-visible {
      * @param state - Global state object
      */
     function refreshFocusables(state) {
-        const startTime = performance.now(); // TODO 4: Performance monitoring
+        const startTime = performance.now();
         const config = state.config;
         // Use Shadow DOM traversal if enabled, otherwise a lazy bounded light-DOM scan.
         let nodes;
@@ -3062,7 +3062,7 @@ body *:focus, body *:focus-visible {
                 }
             }
         }
-        // TODO 4: Performance monitoring (end)
+        // Record refresh timing into state.perf and warn on slow refreshes.
         const duration = performance.now() - startTime;
         if (state.perf) {
             state.perf.refreshCount++;
