@@ -14,6 +14,11 @@ on:
         type: boolean
         default: false
 
+# Restrictive default for GITHUB_TOKEN; the build/create-release jobs escalate
+# to the write scopes they need (packages: write, contents: write).
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

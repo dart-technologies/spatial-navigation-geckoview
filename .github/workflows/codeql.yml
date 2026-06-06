@@ -8,6 +8,11 @@ on:
   schedule:
     - cron: '23 3 * * 1' # Mondays 03:23 UTC
 
+# Restrictive default for GITHUB_TOKEN; the analyze job escalates only what it
+# needs (actions: read, security-events: write).
+permissions:
+  contents: read
+
 jobs:
   analyze:
     name: Analyze
