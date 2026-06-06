@@ -52,7 +52,7 @@
     "test:visual:update": "npx playwright test --update-snapshots",
     "test:visual:ui": "npx playwright test --ui",
     "test:benchmark": "node --import tsx --test perf/*.test.ts",
-    "test:coverage": "c8 --reporter=text --reporter=lcov --reporter=html --src=. --exclude='dist/**' --exclude='extension/**' --exclude='__tests__/**' --exclude='e2e/**' --exclude='perf/**' --exclude='*.config.{js,mjs,ts}' --exclude='scripts/**' --exclude='coverage/**' --exclude='node_modules/**' --reports-dir=coverage --check-coverage --lines=88 --functions=88 --statements=88 --branches=80 npm test",
+    "test:coverage": "c8 --reporter=text --reporter=lcov --reporter=html --reporter=cobertura --src=. --exclude='dist/**' --exclude='extension/**' --exclude='__tests__/**' --exclude='e2e/**' --exclude='perf/**' --exclude='*.config.{js,mjs,ts}' --exclude='scripts/**' --exclude='coverage/**' --exclude='node_modules/**' --reports-dir=coverage --check-coverage --lines=88 --functions=88 --statements=88 --branches=80 npm test",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc -p __tests__/tsconfig.json --noEmit",
     "lint": "eslint .",
