@@ -112,7 +112,6 @@ describe('observeNewElement / unobserveElement', () => {
     });
 
     test('observeNewElement forwards to observer.observe', () => {
-        const el = attachElement(createElement({ tagName: 'button' }));
         const state = createTestState([], {}, { observeIntersection: true });
         syncIntersectionObserver(state);
         const obs = recorder.lastObserver!;

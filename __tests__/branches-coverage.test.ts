@@ -18,7 +18,6 @@ import {
     createElement,
     attachElement,
     createTestState,
-    setActiveElement,
     stampRect,
 } from './helpers/dom_env';
 import { ensureOverlay, showOverlay } from '../core/overlay';

@@ -6,7 +6,7 @@
  * formatRuntimeLabel (3 label variants).
  */
 
-import { test, describe, beforeEach, afterEach } from 'node:test';
+import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { detectPlatform, detectRuntimeContext, formatRuntimeLabel } from '../utils/runtime';

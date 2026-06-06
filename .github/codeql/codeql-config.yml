@@ -1,0 +1,13 @@
+name: CodeQL config
+
+# Keep the security-and-quality suite (chosen deliberately over the default
+# security-only set), but stop analyzing GENERATED artifacts. The committed
+# bundles are derived from source CodeQL already scans, so analyzing the
+# transpiled/bundled output adds no security coverage — only build-artifact
+# quality noise (e.g. an "unused variable" on the bundle's IIFE export). This
+# mirrors the ESLint (eslint.config.js) and Prettier (.prettierignore) ignore
+# lists for the same files.
+paths-ignore:
+  - extension
+  - e2e/fixtures
+  - dist

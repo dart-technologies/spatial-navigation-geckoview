@@ -83,8 +83,7 @@ describe('scheduleOverlayUpdate', () => {
             createElement({ tagName: 'button', tabindex: '0', rect: { width: 80, height: 30 } })
         );
         const state = createTestState([target]);
-        const first = scheduleOverlayUpdate(target, state);
-        void first;
+        scheduleOverlayUpdate(target, state);
         const firstTimer = state.updateTimer;
         scheduleOverlayUpdate(target, state);
         assert.notEqual(state.updateTimer, firstTimer, 'new timer replaces old');

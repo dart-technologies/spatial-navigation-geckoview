@@ -30,8 +30,8 @@ globalThis.innerWidth = 1920;
 globalThis.innerHeight = 1080;
 
 // Import after mocking
-import { calculateDistance, isGridAligned, computeDirectionalMetrics } from '../core/scoring';
-import { getConfig, updateConfig } from '../core/config';
+import { calculateDistance, isGridAligned } from '../core/scoring';
+import { getConfig } from '../core/config';
 
 // Types for test data
 interface RectLike {
