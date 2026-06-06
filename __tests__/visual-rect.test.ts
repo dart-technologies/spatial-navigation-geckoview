@@ -9,7 +9,7 @@ import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { calculateVisualRect } from '../core/geometry';
-import { setupDomEnv, teardownDomEnv, attachElement, createElement } from './helpers/dom_env';
+import { setupDomEnv, teardownDomEnv, attachElement, createElement, domRect } from './helpers/dom_env';
 
 describe('calculateVisualRect — shrink-to-fit (link-wraps-image bug)', () => {
     beforeEach(() => setupDomEnv({ innerWidth: 1920, innerHeight: 1080 }));
@@ -686,4 +686,108 @@ describe('calculateVisualRect — cross-strategy composition', () => {
             assert.equal(rect.height, 200, 'clamped to inner wrapper height (NOT 400)');
         }
     );
+});
+
+// ---------------------------------------------------------------------------
+// DoS hardening — the shrink-to-fit media scan must stay bounded and must
+// NEVER materialize a full descendant NodeList from page-controlled DOM.
+// Regression guard for the fix that replaced `element.querySelectorAll(
+// mediaSelector)` (which built the whole match list up front, before the
+// processing cap applied) with the shared budget-bounded `walkElementsBounded`
+// walker. A focused element wrapping a hostile media subtree must not be able
+// to force an unbounded allocation on every focus change / ring redraw.
+// ---------------------------------------------------------------------------
+
+/** Shadow `el.querySelectorAll` with a counting passthrough; returns a call-count getter. */
+function spyQuerySelectorAll(el: HTMLElement): () => number {
+    let calls = 0;
+    const real = el.querySelectorAll.bind(el);
+    (el as unknown as { querySelectorAll: (...a: unknown[]) => unknown }).querySelectorAll = (
+        ...a: unknown[]
+    ) => {
+        calls += 1;
+        return (real as (...x: unknown[]) => unknown)(...a);
+    };
+    return () => calls;
+}
+
+describe('calculateVisualRect — media scan is bounded (no NodeList materialization)', () => {
+    beforeEach(() => setupDomEnv({ innerWidth: 1920, innerHeight: 1080 }));
+    afterEach(() => teardownDomEnv());
+
+    test('finds a deeply-nested dominant image via the lazy walk, without calling querySelectorAll', () => {
+        const link = attachElement(
+            createElement({ tagName: 'a', rect: { x: 0, y: 0, width: 600, height: 400 } })
+        );
+        // Bury the dominant <img> under a deep chain of benign (non-media)
+        // wrappers so this exercises descendant traversal — the case the old
+        // `element.querySelectorAll` handled natively — not just direct children.
+        let parent: HTMLElement = link;
+        for (let i = 0; i < 40; i++) {
+            const div = createElement({ tagName: 'div', rect: { x: 0, y: 0, width: 600, height: 400 } });
+            parent.appendChild(div);
+            parent = div;
+        }
+        parent.appendChild(
+            createElement({ tagName: 'img', rect: { x: 10, y: 20, width: 580, height: 360 } })
+        );
+
+        const qsaCalls = spyQuerySelectorAll(link);
+
+        const rect = calculateVisualRect(link);
+
+        assert.equal(
+            qsaCalls(),
+            0,
+            'media scan must not call element.querySelectorAll (would materialize the full NodeList)'
+        );
+        assert.equal(rect.left, 10, 'the lazy walk still finds the descendant image and shrinks to it');
+        assert.equal(rect.width, 580);
+    });
+
+    test('caps per-media work on a pathological media subtree (does not touch every descendant)', () => {
+        // MEDIA_COUNT is deliberately well above the internal
+        // MAX_MEDIA_CANDIDATES cap (1000) in core/geometry.ts, so a bounded
+        // scan cannot come close to reaching them all.
+        const MEDIA_COUNT = 2500;
+        const link = attachElement(
+            createElement({ tagName: 'a', rect: { x: 0, y: 0, width: 600, height: 400 } })
+        );
+        const zero = domRect(0, 0, 0, 0);
+        let rectCalls = 0;
+        for (let i = 0; i < MEDIA_COUNT; i++) {
+            // Broken / not-yet-loaded images report 0×0 — each is *examined*
+            // but never counts as "visible", so only the examined-count cap
+            // (not the stop-at-two-visible shortcut) can halt the scan.
+            const img = createElement({ tagName: 'img' });
+            (img as unknown as { getBoundingClientRect: () => DOMRect }).getBoundingClientRect = () => {
+                rectCalls += 1;
+                return zero;
+            };
+            link.appendChild(img);
+        }
+
+        const qsaCalls = spyQuerySelectorAll(link);
+
+        const rect = calculateVisualRect(link);
+
+        // The definitive regression guard: no full NodeList is ever built.
+        assert.equal(qsaCalls(), 0, 'must not materialize the media subtree via querySelectorAll');
+        // Boundedness: the scan stops far short of touching all the media.
+        assert.ok(
+            rectCalls < MEDIA_COUNT,
+            `examined media must be bounded below the full ${MEDIA_COUNT} (was ${rectCalls})`
+        );
+        // The shrink scan is capped at MAX_MEDIA_CANDIDATES (1000); the small
+        // margin absorbs the one extra O(1) `querySelector` inspection the
+        // expand-to-fit strategy does on the first media child.
+        assert.ok(
+            rectCalls <= 1100,
+            `examined media must stay near the MAX_MEDIA_CANDIDATES cap of 1000, not the full subtree (was ${rectCalls})`
+        );
+        // Correctness preserved under the pathological input: no visible media
+        // → no shrink → the wrapper's own rect, and no crash.
+        assert.equal(rect.width, 600, 'no spurious shrink when there are no visible media');
+        assert.equal(rect.height, 400);
+    });
 });
