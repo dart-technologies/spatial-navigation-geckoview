@@ -9,6 +9,7 @@ import { updateEntryGeometry } from '../core/geometry';
 import { FocusGroup, parseFocusGroupAttribute, findFocusGroupContainer } from '../core/focus_group';
 import { syncIntersectionObserver, observeNewElement, unobserveElement } from './intersection';
 import { createLogger } from './logger';
+import { walkElementsBounded, MAX_SCAN_NODES } from './dom-walk';
 import type { SpatialNavConfig } from '../core/config';
 import type { SpatialNavState, FocusableEntry } from '../core/state';
 
@@ -22,41 +23,12 @@ const focusableSelector =
 
 // ===== Shadow DOM Traversal =====
 
-/**
- * Upper bound on elements *visited* during a single focusable scan — light DOM
- * and deep shadow traversal alike. Every discovery walks the tree lazily and
- * stops here, so a hostile/pathological page (millions of nodes, deeply nested
- * shadow roots) can never force a full DOM enumeration. Shared across the
- * recursion via a budget object. Set far above any realistic page.
- */
-export const MAX_SCAN_NODES = 100_000;
-
-/**
- * Walk elements under `root` in document (pre-order) order via
- * firstElementChild/nextElementSibling, invoking `visit` for each, until the
- * shared `budget` is exhausted (then truncate with a warning). A lazy, bounded
- * alternative to `querySelectorAll`: it never materializes a full NodeList, so a
- * hostile, very large DOM cannot force a complete enumeration before any cap
- * applies. (TreeWalker would be cleaner but is unreliable under happy-dom.)
- */
-export function walkElementsBounded(
-    root: ParentNode,
-    budget: { nodes: number },
-    visit: (el: Element) => void
-): void {
-    const pending: Element[] = [];
-    let node: Element | null = root.firstElementChild;
-    while (node) {
-        if (budget.nodes <= 0) {
-            log.warn('DOM scan hit node budget; truncating');
-            break;
-        }
-        budget.nodes--;
-        visit(node);
-        if (node.nextElementSibling) pending.push(node.nextElementSibling);
-        node = node.firstElementChild ?? pending.pop() ?? null;
-    }
-}
+// `walkElementsBounded` and `MAX_SCAN_NODES` were extracted to ./dom-walk so
+// low-level modules (e.g. core/geometry) can reuse the bounded walk without an
+// import cycle — utils/dom imports from core/geometry, so core/geometry must not
+// import from utils/dom. Re-exported here for backward compatibility with
+// existing importers and tests.
+export { walkElementsBounded, MAX_SCAN_NODES };
 
 /**
  * Find focusable elements including those in Shadow DOM.

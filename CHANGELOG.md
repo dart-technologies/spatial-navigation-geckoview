@@ -11,12 +11,13 @@ Post-3.2.0 hardening, tooling, and documentation. No web-page or messaging API c
 
 ### Security
 
-- **Compile-time relay-type guard.** `SimulateClickMessage` now extends the `OutboundMessage` union, so omitting a new outbound type from the `OUTBOUND_MESSAGE_TYPES` allowlist fails type-checking instead of being silently dropped by the background relay at runtime. The remaining element-scoped DOM scans were moved onto the shared budget-bounded `walkElementsBounded` walker, completing the bounded-scan work from 3.2.0.
+- **Compile-time relay-type guard.** `SimulateClickMessage` now extends the `OutboundMessage` union, so omitting a new outbound type from the `OUTBOUND_MESSAGE_TYPES` allowlist fails type-checking instead of being silently dropped by the background relay at runtime.
+- **Fully bounded element-scoped DOM scans.** The last page-scanning paths that still materialized a full match list now use the shared budget-bounded `walkElementsBounded` walker instead of `querySelectorAll`: the element-rooted scans in `utils/dom.ts` and the media-shrink scan in `core/geometry.ts` (`calculateVisualRect`). The walker was extracted to `utils/dom-walk.ts` so `core/geometry.ts` can share it without an import cycle. No discovery path now builds an unbounded NodeList from page-controlled DOM.
 - **Auto-init gated at build time.** The content script's auto-initialization is now gated on build-time `NODE_ENV` (folded out of the production bundle) rather than a page-reachable `__SPATNAV_NO_AUTO_INIT__` global, removing a page-controllable toggle over the extension's startup.
 
 ### Changed
 
-- **Supply-chain & release tooling.** Added OpenSSF Scorecard and dependency-review CI workflows (with a Scorecard badge in the README), and a `scripts/release.mjs` helper that bumps every version site, dates this changelog, syncs the lockfile + manifest, and rebuilds bundles. Bumped `github/codeql-action` to v4.
+- **Supply-chain & release tooling.** Added OpenSSF Scorecard and dependency-review CI workflows (with a Scorecard badge in the README), and a `scripts/release.mjs` helper that bumps every version site, dates this changelog, syncs the lockfile + manifest, and rebuilds bundles.
 
 ### Documentation
 

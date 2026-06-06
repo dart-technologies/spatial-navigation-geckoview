@@ -136,7 +136,7 @@ var SpatialNavigation = (function (exports) {
      *   - {@link CONFIG_PRESETS} / {@link applyPreset} — TV / phone / tablet / kiosk profiles
      *   - {@link SCORING_CONSTANTS} — score weights used by the scoring algorithm
      */
-    const log$g = createLogger('Config');
+    const log$h = createLogger('Config');
     // =============================================================================
     // Scoring constants
     // =============================================================================
@@ -479,7 +479,7 @@ var SpatialNavigation = (function (exports) {
                     out[key] = value;
                 }
                 else {
-                    log$g.warn(`config.${key}: expected string, got ${typeof value} — ignored`);
+                    log$h.warn(`config.${key}: expected string, got ${typeof value} — ignored`);
                 }
                 continue;
             }
@@ -491,7 +491,7 @@ var SpatialNavigation = (function (exports) {
                         : value;
                 }
                 else {
-                    log$g.warn(`config.${key}: expected finite number, got ${typeof value} — ignored`);
+                    log$h.warn(`config.${key}: expected finite number, got ${typeof value} — ignored`);
                 }
                 continue;
             }
@@ -500,7 +500,7 @@ var SpatialNavigation = (function (exports) {
                     out[key] = value;
                 }
                 else {
-                    log$g.warn(`config.${key}: expected boolean, got ${typeof value} — ignored`);
+                    log$h.warn(`config.${key}: expected boolean, got ${typeof value} — ignored`);
                 }
                 continue;
             }
@@ -510,7 +510,7 @@ var SpatialNavigation = (function (exports) {
                 }
                 else {
                     const allowed = Array.from(ENUM_KEYS[key]).join(', ');
-                    log$g.warn(`config.${key}: must be one of [${allowed}] — got ${JSON.stringify(value)}, ignored`);
+                    log$h.warn(`config.${key}: must be one of [${allowed}] — got ${JSON.stringify(value)}, ignored`);
                 }
                 continue;
             }
@@ -524,12 +524,12 @@ var SpatialNavigation = (function (exports) {
                         .slice(0, ARRAY_MAX_ITEMS)
                         .filter((s) => s.length <= ARRAY_ITEM_MAX_LENGTH);
                     if (capped.length !== value.length) {
-                        log$g.warn(`config.${key}: truncated from ${value.length} to ${capped.length} items (caps: ${ARRAY_MAX_ITEMS} items, ${ARRAY_ITEM_MAX_LENGTH} chars each)`);
+                        log$h.warn(`config.${key}: truncated from ${value.length} to ${capped.length} items (caps: ${ARRAY_MAX_ITEMS} items, ${ARRAY_ITEM_MAX_LENGTH} chars each)`);
                     }
                     out[key] = capped;
                 }
                 else {
-                    log$g.warn(`config.${key}: expected string[], got ${typeof value} — ignored`);
+                    log$h.warn(`config.${key}: expected string[], got ${typeof value} — ignored`);
                 }
                 continue;
             }
@@ -541,11 +541,11 @@ var SpatialNavigation = (function (exports) {
                         : value;
                 }
                 else {
-                    log$g.warn(`config.${key}: expected object, got ${typeof value} — ignored`);
+                    log$h.warn(`config.${key}: expected object, got ${typeof value} — ignored`);
                 }
                 continue;
             }
-            log$g.warn(`config.${key}: unknown key — ignored`);
+            log$h.warn(`config.${key}: unknown key — ignored`);
         }
         return out;
     }
@@ -686,6 +686,47 @@ var SpatialNavigation = (function (exports) {
         // the keydown handler in `handlers.ts` flip this on real input.
         state.lastReportedModality = state.lastReportedModality || 'touch';
         return state;
+    }
+
+    /**
+     * Bounded DOM-walk primitive.
+     *
+     * Factored out of `utils/dom` so low-level modules (e.g. `core/geometry`) can
+     * reuse the lazy, budget-bounded walk without creating an import cycle:
+     * `utils/dom` imports from `core/geometry`, so `core/geometry` must not import
+     * from `utils/dom`. This module imports only the logger, so it stays a leaf and
+     * is safe to depend on from anywhere.
+     */
+    const log$g = createLogger('DOM');
+    /**
+     * Upper bound on elements *visited* during a single scan. Every discovery walks
+     * the tree lazily and stops here, so a hostile/pathological page (millions of
+     * nodes, deeply nested shadow roots) can never force a full DOM enumeration.
+     * Shared across recursion via a budget object. Set far above any realistic page.
+     */
+    const MAX_SCAN_NODES = 100000;
+    /**
+     * Walk elements under `root` in document (pre-order) order via
+     * firstElementChild/nextElementSibling, invoking `visit` for each, until the
+     * shared `budget` is exhausted (then truncate with a warning). A lazy, bounded
+     * alternative to `querySelectorAll`: it never materializes a full NodeList, so a
+     * hostile, very large DOM cannot force a complete enumeration before any cap
+     * applies. (TreeWalker would be cleaner but is unreliable under happy-dom.)
+     */
+    function walkElementsBounded(root, budget, visit) {
+        const pending = [];
+        let node = root.firstElementChild;
+        while (node) {
+            if (budget.nodes <= 0) {
+                log$g.warn('DOM scan hit node budget; truncating');
+                break;
+            }
+            budget.nodes--;
+            visit(node);
+            if (node.nextElementSibling)
+                pending.push(node.nextElementSibling);
+            node = node.firstElementChild ?? pending.pop() ?? null;
+        }
     }
 
     /**
@@ -906,53 +947,59 @@ var SpatialNavigation = (function (exports) {
         //    children) because pages routinely wrap `<img>` in an extra
         //    `<span>` or `<picture>` inside the link.
         const mediaSelector = 'img, picture, svg, video, canvas';
-        const mediaCandidates = element.querySelectorAll(mediaSelector);
-        if (mediaCandidates.length > 0) {
-            const visibleMedia = [];
-            // Bound the per-child getComputedStyle/rect work: only the
-            // single-dominant-media case shrinks the ring, so a pathological element
-            // with a huge media subtree can't make this scan expensive. Cap the scan,
-            // and stop as soon as a second visible media element is found.
-            const MAX_MEDIA_CANDIDATES = 1000;
-            const limit = Math.min(mediaCandidates.length, MAX_MEDIA_CANDIDATES);
-            for (let i = 0; i < limit; i++) {
-                const child = mediaCandidates[i];
-                // Skip explicitly-hidden children.
-                if (child.getAttribute('aria-hidden') === 'true')
-                    continue;
-                const childRect = safeGetBoundingClientRect(child);
-                if (childRect.width <= 0 || childRect.height <= 0)
-                    continue;
-                // Skip children whose computed display/visibility hides them.
-                // (Robolectric/jsdom test envs always return 'block', so this
-                // is a no-op there but matters in production.)
-                try {
-                    const cs = (element.ownerDocument?.defaultView ?? window).getComputedStyle(child);
-                    if (cs.display === 'none' || cs.visibility === 'hidden')
-                        continue;
-                }
-                catch {
-                    // No window / non-browser env — accept the child.
-                }
-                visibleMedia.push(child);
-                if (visibleMedia.length > 1)
-                    break;
+        const visibleMedia = [];
+        // Bound BOTH the materialization and the per-child getComputedStyle/rect work.
+        // Walk descendants lazily via the shared budget-bounded walker (never building a
+        // full querySelectorAll NodeList), matching media inline. Only the
+        // single-dominant-media case shrinks the ring, so we examine at most
+        // MAX_MEDIA_CANDIDATES media elements and stop processing once a second visible
+        // one appears — a focused element wrapping a huge media subtree can't make this
+        // scan expensive. (calculateVisualRect runs per focus change, not per candidate.)
+        const MAX_MEDIA_CANDIDATES = 1000;
+        let examinedMedia = 0;
+        let mediaScanDone = false;
+        walkElementsBounded(element, { nodes: MAX_SCAN_NODES }, (node) => {
+            if (mediaScanDone || !node.matches(mediaSelector))
+                return;
+            const child = node;
+            examinedMedia += 1;
+            if (examinedMedia >= MAX_MEDIA_CANDIDATES)
+                mediaScanDone = true;
+            // Skip explicitly-hidden children.
+            if (child.getAttribute('aria-hidden') === 'true')
+                return;
+            const childRect = safeGetBoundingClientRect(child);
+            if (childRect.width <= 0 || childRect.height <= 0)
+                return;
+            // Skip children whose computed display/visibility hides them.
+            // (Robolectric/jsdom test envs always return 'block', so this
+            // is a no-op there but matters in production.)
+            try {
+                const cs = (element.ownerDocument?.defaultView ?? window).getComputedStyle(child);
+                if (cs.display === 'none' || cs.visibility === 'hidden')
+                    return;
             }
-            if (visibleMedia.length === 1) {
-                const childRect = safeGetBoundingClientRect(visibleMedia[0]);
-                const wrapperArea = Math.max(1, rect.width * rect.height);
-                const childArea = childRect.width * childRect.height;
-                // Only shrink when the media child dominates the wrapper
-                // (≥50% of its area). Keeps icon-plus-label links from
-                // shrinking to the icon.
-                const dominates = childArea / wrapperArea >= 0.5;
-                // Don't shrink if there's significant non-media visible text
-                // alongside the image (caption-under-photo cards, etc.).
-                const text = element.textContent?.trim() ?? '';
-                const hasSignificantText = text.length > 0;
-                if (dominates && !hasSignificantText) {
-                    return clipToVisibleArea(childRect, visibleMedia[0]);
-                }
+            catch {
+                // No window / non-browser env — accept the child.
+            }
+            visibleMedia.push(child);
+            if (visibleMedia.length > 1)
+                mediaScanDone = true;
+        });
+        if (visibleMedia.length === 1) {
+            const childRect = safeGetBoundingClientRect(visibleMedia[0]);
+            const wrapperArea = Math.max(1, rect.width * rect.height);
+            const childArea = childRect.width * childRect.height;
+            // Only shrink when the media child dominates the wrapper
+            // (≥50% of its area). Keeps icon-plus-label links from
+            // shrinking to the icon.
+            const dominates = childArea / wrapperArea >= 0.5;
+            // Don't shrink if there's significant non-media visible text
+            // alongside the image (caption-under-photo cards, etc.).
+            const text = element.textContent?.trim() ?? '';
+            const hasSignificantText = text.length > 0;
+            if (dominates && !hasSignificantText) {
+                return clipToVisibleArea(childRect, visibleMedia[0]);
             }
         }
         // 2) Expand-to-fit: for elements like logos / image-buttons whose
@@ -2563,38 +2610,6 @@ body *:focus, body *:focus-visible {
     /** Threshold above which a focusable refresh is logged as slow (ms). */
     const SLOW_REFRESH_THRESHOLD_MS = 50;
     const focusableSelector = 'a[href], a[aria-haspopup], [role="link"], button:not([disabled]), [role="button"], [aria-haspopup="true"], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
-    // ===== Shadow DOM Traversal =====
-    /**
-     * Upper bound on elements *visited* during a single focusable scan — light DOM
-     * and deep shadow traversal alike. Every discovery walks the tree lazily and
-     * stops here, so a hostile/pathological page (millions of nodes, deeply nested
-     * shadow roots) can never force a full DOM enumeration. Shared across the
-     * recursion via a budget object. Set far above any realistic page.
-     */
-    const MAX_SCAN_NODES = 100000;
-    /**
-     * Walk elements under `root` in document (pre-order) order via
-     * firstElementChild/nextElementSibling, invoking `visit` for each, until the
-     * shared `budget` is exhausted (then truncate with a warning). A lazy, bounded
-     * alternative to `querySelectorAll`: it never materializes a full NodeList, so a
-     * hostile, very large DOM cannot force a complete enumeration before any cap
-     * applies. (TreeWalker would be cleaner but is unreliable under happy-dom.)
-     */
-    function walkElementsBounded(root, budget, visit) {
-        const pending = [];
-        let node = root.firstElementChild;
-        while (node) {
-            if (budget.nodes <= 0) {
-                log$d.warn('DOM scan hit node budget; truncating');
-                break;
-            }
-            budget.nodes--;
-            visit(node);
-            if (node.nextElementSibling)
-                pending.push(node.nextElementSibling);
-            node = node.firstElementChild ?? pending.pop() ?? null;
-        }
-    }
     /**
      * Find focusable elements including those in Shadow DOM.
      * Recursively traverses shadow roots; slotted light-DOM content needs no special

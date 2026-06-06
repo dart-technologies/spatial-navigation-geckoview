@@ -5,6 +5,7 @@
  */
 
 import type { SpatialNavState, FocusableEntry } from './state';
+import { walkElementsBounded, MAX_SCAN_NODES } from '../utils/dom-walk';
 
 export interface Point {
     x: number;
@@ -230,48 +231,52 @@ export function calculateVisualRect(element: HTMLElement): DOMRect {
     //    children) because pages routinely wrap `<img>` in an extra
     //    `<span>` or `<picture>` inside the link.
     const mediaSelector = 'img, picture, svg, video, canvas';
-    const mediaCandidates = element.querySelectorAll(mediaSelector);
-    if (mediaCandidates.length > 0) {
-        const visibleMedia: HTMLElement[] = [];
-        // Bound the per-child getComputedStyle/rect work: only the
-        // single-dominant-media case shrinks the ring, so a pathological element
-        // with a huge media subtree can't make this scan expensive. Cap the scan,
-        // and stop as soon as a second visible media element is found.
-        const MAX_MEDIA_CANDIDATES = 1000;
-        const limit = Math.min(mediaCandidates.length, MAX_MEDIA_CANDIDATES);
-        for (let i = 0; i < limit; i++) {
-            const child = mediaCandidates[i] as HTMLElement;
-            // Skip explicitly-hidden children.
-            if (child.getAttribute('aria-hidden') === 'true') continue;
-            const childRect = safeGetBoundingClientRect(child);
-            if (childRect.width <= 0 || childRect.height <= 0) continue;
-            // Skip children whose computed display/visibility hides them.
-            // (Robolectric/jsdom test envs always return 'block', so this
-            // is a no-op there but matters in production.)
-            try {
-                const cs = (element.ownerDocument?.defaultView ?? window).getComputedStyle(child);
-                if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-            } catch {
-                // No window / non-browser env — accept the child.
-            }
-            visibleMedia.push(child);
-            if (visibleMedia.length > 1) break;
+    const visibleMedia: HTMLElement[] = [];
+    // Bound BOTH the materialization and the per-child getComputedStyle/rect work.
+    // Walk descendants lazily via the shared budget-bounded walker (never building a
+    // full querySelectorAll NodeList), matching media inline. Only the
+    // single-dominant-media case shrinks the ring, so we examine at most
+    // MAX_MEDIA_CANDIDATES media elements and stop processing once a second visible
+    // one appears — a focused element wrapping a huge media subtree can't make this
+    // scan expensive. (calculateVisualRect runs per focus change, not per candidate.)
+    const MAX_MEDIA_CANDIDATES = 1000;
+    let examinedMedia = 0;
+    let mediaScanDone = false;
+    walkElementsBounded(element, { nodes: MAX_SCAN_NODES }, (node) => {
+        if (mediaScanDone || !node.matches(mediaSelector)) return;
+        const child = node as HTMLElement;
+        examinedMedia += 1;
+        if (examinedMedia >= MAX_MEDIA_CANDIDATES) mediaScanDone = true;
+        // Skip explicitly-hidden children.
+        if (child.getAttribute('aria-hidden') === 'true') return;
+        const childRect = safeGetBoundingClientRect(child);
+        if (childRect.width <= 0 || childRect.height <= 0) return;
+        // Skip children whose computed display/visibility hides them.
+        // (Robolectric/jsdom test envs always return 'block', so this
+        // is a no-op there but matters in production.)
+        try {
+            const cs = (element.ownerDocument?.defaultView ?? window).getComputedStyle(child);
+            if (cs.display === 'none' || cs.visibility === 'hidden') return;
+        } catch {
+            // No window / non-browser env — accept the child.
         }
-        if (visibleMedia.length === 1) {
-            const childRect = safeGetBoundingClientRect(visibleMedia[0]);
-            const wrapperArea = Math.max(1, rect.width * rect.height);
-            const childArea = childRect.width * childRect.height;
-            // Only shrink when the media child dominates the wrapper
-            // (≥50% of its area). Keeps icon-plus-label links from
-            // shrinking to the icon.
-            const dominates = childArea / wrapperArea >= 0.5;
-            // Don't shrink if there's significant non-media visible text
-            // alongside the image (caption-under-photo cards, etc.).
-            const text = element.textContent?.trim() ?? '';
-            const hasSignificantText = text.length > 0;
-            if (dominates && !hasSignificantText) {
-                return clipToVisibleArea(childRect, visibleMedia[0]);
-            }
+        visibleMedia.push(child);
+        if (visibleMedia.length > 1) mediaScanDone = true;
+    });
+    if (visibleMedia.length === 1) {
+        const childRect = safeGetBoundingClientRect(visibleMedia[0]);
+        const wrapperArea = Math.max(1, rect.width * rect.height);
+        const childArea = childRect.width * childRect.height;
+        // Only shrink when the media child dominates the wrapper
+        // (≥50% of its area). Keeps icon-plus-label links from
+        // shrinking to the icon.
+        const dominates = childArea / wrapperArea >= 0.5;
+        // Don't shrink if there's significant non-media visible text
+        // alongside the image (caption-under-photo cards, etc.).
+        const text = element.textContent?.trim() ?? '';
+        const hasSignificantText = text.length > 0;
+        if (dominates && !hasSignificantText) {
+            return clipToVisibleArea(childRect, visibleMedia[0]);
         }
     }
 
