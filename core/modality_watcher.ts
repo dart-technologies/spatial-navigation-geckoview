@@ -33,8 +33,8 @@ const log = createLogger('Main');
 /**
  * Title-prefix used to postback modality changes via `document.title`.
  *
- * Keep in lockstep with `_controlTitlePrefix` in
- * `flutter-geckoview-apps/packages/browse_core/lib/src/focus/focus_style_manager.dart`.
+ * Keep in lockstep with the `_controlTitlePrefix` the host app's focus-style
+ * manager reads off this title channel.
  */
 export const MODALITY_TITLE_PREFIX = 'flutter-modality-control:';
 
