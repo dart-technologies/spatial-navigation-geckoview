@@ -92,8 +92,7 @@ export function setupInputModalityWatcher(
     } = {}
 ): boolean {
     const win = (options.windowRef ?? (typeof window !== 'undefined' ? window : undefined)) as
-        | (Window & typeof globalThis)
-        | undefined;
+        (Window & typeof globalThis) | undefined;
     const doc = options.documentRef ?? (typeof document !== 'undefined' ? document : undefined);
     if (!doc || !win) return false;
 
