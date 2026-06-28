@@ -133,8 +133,7 @@ describe('boundary scroll behavior — reduced motion', () => {
         await new Promise((r) => setTimeout(r, 0));
         assert.equal(captured.fired, 0, 'no scroll attempted (no room up)');
         const fx = capture!.messages.find((m) => (m as { type?: string }).type === 'focusExit') as
-            | { type: string; direction: string }
-            | undefined;
+            { type: string; direction: string } | undefined;
         assert.ok(fx, 'focusExit sent via bridge on fall-through');
         assert.equal(fx!.direction, 'up');
     });
