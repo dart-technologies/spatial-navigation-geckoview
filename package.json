@@ -124,7 +124,7 @@
     "happy-dom": "^20.10.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.7",
-    "prettier": "^3.8.3",
+    "prettier": "^3.9.1",
     "rollup": "^4.62.0",
     "serve": "^14.2.5",
     "tslib": "^2.8.1",
