@@ -189,8 +189,7 @@ describe('tryCloseOpenMenuToggle — outside-click fallback', () => {
         // Allow setTimeout(0) for outside-click.
         await new Promise((r) => setTimeout(r, 5));
         const sim = capture.messages.find((m) => (m as { type?: string }).type === 'simulateClick') as
-            | { type: string; debug: { context: string } }
-            | undefined;
+            { type: string; debug: { context: string } } | undefined;
         assert.ok(sim, 'simulateClick was sent to native bridge');
         assert.equal(sim!.debug.context, 'menuToggleClose');
     });
