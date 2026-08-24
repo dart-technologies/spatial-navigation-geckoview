@@ -242,7 +242,14 @@ var SpatialNavigation = (function (exports) {
             overlayGlowOpacity: clampNumber(userConfig.overlayGlowOpacity, 0, 1, 0.35),
             overlayGlowBlur: clampNumber(userConfig.overlayGlowBlur, 0, 64, 14),
             overlayInnerGlowOpacity: clampNumber(userConfig.overlayInnerGlowOpacity, 0, 1, 0.16),
-            visibilityMode: userConfig.visibilityMode === 'hardware-nav-only' ? 'hardware-nav-only' : 'always',
+            // Fail-safe polarity (v3.3.0): default to 'hardware-nav-only' so the
+            // ring/chevron overlay never paints from touch interaction unless a
+            // host explicitly opts into 'always' (leanback/dpad surfaces). The
+            // old 'always' default meant hybrid/touch hosts depended entirely on
+            // a wrapper-injected CSS gate delivered over `javascript:` URLs —
+            // which page CSP (YouTube Trusted-Types) blocks, leaving the overlay
+            // ungated and visible on every tap-to-focus.
+            visibilityMode: userConfig.visibilityMode === 'always' ? 'always' : 'hardware-nav-only',
             enableFocusPulse: userConfig.enableFocusPulse === true,
             // Default to `'scroll'` so a directional press at a viewport
             // boundary on a long page scrolls into view instead of silently
@@ -601,7 +608,7 @@ var SpatialNavigation = (function (exports) {
         window.flutterFocusState = state;
         // Core navigation state
         state.config = config;
-        state.version = '3.2.0';
+        state.version = '3.3.0';
         state.currentIndex = typeof state.currentIndex === 'number' ? state.currentIndex : -1;
         state.initialized = !!state.initialized;
         state.handlersAttached = !!state.handlersAttached;
@@ -1240,6 +1247,16 @@ body *:focus, body *:focus-visible {
         // overlay is purely visual chrome and should NOT be announced by AT.
         host.setAttribute('role', 'presentation');
         host.setAttribute('aria-hidden', 'true');
+        // Visibility-gate attributes are EXTENSION-authoritative (v3.3.0): the
+        // `:host([data-modality][data-ring])` reveal in `generateShadowCSS`
+        // used to depend on the WRAPPER writing these via a `javascript:` URL
+        // load, which page CSP (YouTube's Trusted-Types policy) can block —
+        // leaving the gate permanently absent. Stamping them here, from the
+        // extension's own modality state, makes the gate work on every page
+        // with no host round-trip. Wrapper writes of the same attributes stay
+        // harmless: both writers derive from the same physical input events.
+        host.setAttribute('data-modality', state.lastReportedModality || 'touch');
+        host.setAttribute('data-ring', 'hidden');
         document.body.appendChild(host);
         const shadow = host.attachShadow({ mode: 'open' });
         const shadowStyle = document.createElement('style');
@@ -1752,6 +1769,7 @@ body *:focus, body *:focus-visible {
             if (state.overlay) {
                 state.overlay.classList.remove('visible');
             }
+            setHostRing(state, false);
             const shadow = state.overlayHost?.shadowRoot;
             const label = shadow?.getElementById(overlayLabelId);
             if (label) {
@@ -1760,6 +1778,7 @@ body *:focus, body *:focus-visible {
             updateDebugHud(state);
             return;
         }
+        setHostRing(state, true);
         // Get the visual bounds using our consolidated logic
         const rect = calculateVisualRect(element);
         const overlay = state.overlay;
@@ -1943,6 +1962,26 @@ body *:focus, body *:focus-visible {
         }
     }
     /**
+     * Stamp the current input modality onto the overlay host so the
+     * `:host([data-modality="hardware-nav"][data-ring="visible"])` CSS gate
+     * (see `generateShadowCSS`) tracks the EXTENSION's own modality state —
+     * no wrapper round-trip, so it cannot be lost to page CSP or host
+     * re-creation. Safe no-op before the host exists.
+     */
+    function setHostModality(modality) {
+        const host = document.getElementById(overlayHostId);
+        if (host) {
+            host.setAttribute('data-modality', modality);
+        }
+    }
+    /** Stamp ring visibility onto the overlay host (see `setHostModality`). */
+    function setHostRing(state, visible) {
+        const host = state.overlayHost || document.getElementById(overlayHostId);
+        if (host) {
+            host.setAttribute('data-ring', visible ? 'visible' : 'hidden');
+        }
+    }
+    /**
      * Hide the focus overlay.
      */
     function hideOverlay(state) {
@@ -1957,6 +1996,7 @@ body *:focus, body *:focus-visible {
         if (state.overlay) {
             state.overlay.classList.remove('visible');
         }
+        setHostRing(state, false);
         if (state.activeResizeObserver) {
             state.activeResizeObserver.disconnect();
             state.activeResizeObserver = null;
@@ -3965,6 +4005,26 @@ body *:focus, body *:focus-visible {
      * @param state - Global state object
      */
     function scheduleOverlayUpdate(target, state) {
+        // Modality gate (v3.3.0): in 'hardware-nav-only' mode the ring and
+        // chevron previews may only paint while the last observed input was a
+        // hardware key. A tap-to-focus (capture-phase `focus` listener in
+        // handlers.ts) or a touch drag-scroll otherwise repaints them — the
+        // exact leak users saw on Trusted-Types pages where the wrapper's CSS
+        // gate injection is CSP-blocked. Enforced here, in the extension's own
+        // compartment, so no host round-trip can break it.
+        if (state.config?.visibilityMode === 'hardware-nav-only' &&
+            state.lastReportedModality !== 'hardware-nav') {
+            if (state.updateTimer) {
+                cancelAnimationFrame(state.updateTimer);
+                state.updateTimer = null;
+            }
+            hideOverlay(state);
+            hidePreviewElements(state);
+            if (target && target.nodeType === 1) {
+                state.lastFocusedElement = target;
+            }
+            return;
+        }
         if (state.overlaySuppressed) {
             // [diag] If "ring vanished" coincides with this branch firing,
             // the bug is upstream — someone set `overlaySuppressed = true`
@@ -5225,7 +5285,12 @@ body *:focus, body *:focus-visible {
         if (event.key === 'Enter' || event.key === ' ') {
             // Mark hardware-nav so the next real pointer event flips us back to
             // touch (the modality watcher in `main.ts` reads this).
+            // DELIBERATE: synthetic (isTrusted=false) keydowns flip modality
+            // too — the AAOS receiver's LAN-remote D-pad injects synthetic
+            // keydowns and remote navigation must keep its visible ring. Any
+            // trusted pointer event immediately reverts to touch/hidden.
             state.lastReportedModality = 'hardware-nav';
+            setHostModality('hardware-nav');
             handleActivationKey(event, state, myHandlerId);
             return;
         }
@@ -5234,8 +5299,10 @@ body *:focus, body *:focus-visible {
         if (!keyMap[event.key])
             return;
         // We're committed to handling a directional key; mark hardware-nav so the
-        // pointer watcher resumes transition reporting.
+        // pointer watcher resumes transition reporting. (Synthetic keys included —
+        // see the LAN-remote note on the Enter/Space branch above.)
         state.lastReportedModality = 'hardware-nav';
+        setHostModality('hardware-nav');
         log$7.debug(`directional key: ${event.key}`);
         const now = Date.now();
         const lastRefresh = state.lastRefreshTime || 0;
@@ -6671,27 +6738,17 @@ body *:focus, body *:focus-visible {
             // tap handlers inspect it to recognise a touch activation.
             if (e.isTrusted === false)
                 return;
+            // ALWAYS hide on a trusted pointer — even when modality is already
+            // 'touch'. The old early-return above the hide meant a touch-only
+            // session (lastReportedModality initializes to 'touch') never ran
+            // the hide at all, so a ring painted by any other path stayed up.
+            // Only the modality transition + postback below are throttled.
+            hideOverlay(state);
+            hidePreviewElements(state);
             if (state.lastReportedModality === 'touch')
                 return;
             state.lastReportedModality = 'touch';
-            // Belt-and-braces: hide ring + preview chevrons directly via the
-            // extension's own DOM manipulation. The wrapper-side shadow-DOM
-            // `:host { opacity: 0 }` gate normally handles this — but the
-            // wrapper's runJavaScript is async (queued on the platform
-            // channel) and there's a window where:
-            //   - YouTube / similar SPA fires a `pageshow` or re-init event
-            //   - Extension calls `ensureOverlay` → removes old host, creates
-            //     fresh host (no wrapper marker style, no `data-modality`)
-            //   - User touches before the wrapper's next `_writeHostAttributes`
-            //     lands
-            // During that race, the extension's `showOverlay(null)` path
-            // removes the ring's `.visible` class (ring hides via extension
-            // CSS) but the chevrons keep their `.show` class — visible. The
-            // synchronous hide here closes that gap regardless of wrapper
-            // timing. Idempotent: both helpers no-op when their targets are
-            // already hidden.
-            hideOverlay(state);
-            hidePreviewElements(state);
+            setHostModality('touch');
             postback('touch');
         };
         doc.addEventListener('pointerdown', handlePointer, { passive: true, capture: true });
@@ -6722,7 +6779,7 @@ body *:focus, body *:focus-visible {
     const log = createLogger('Main');
     const STYLE_ID = 'spatnav-focus-styles';
     const OVERLAY_HOST_ID = 'spatnav-focus-host';
-    const VERSION = '3.2.0';
+    const VERSION = '3.3.0';
     // Debounce window for the pageshow re-init handler. Below this threshold we
     // treat consecutive events as the same logical navigation.
     const PAGESHOW_DEBOUNCE_MS = 100;

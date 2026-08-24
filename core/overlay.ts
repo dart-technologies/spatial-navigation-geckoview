@@ -120,6 +120,16 @@ export function ensureOverlay(config: SpatialNavConfig, state: SpatialNavState):
     // overlay is purely visual chrome and should NOT be announced by AT.
     host.setAttribute('role', 'presentation');
     host.setAttribute('aria-hidden', 'true');
+    // Visibility-gate attributes are EXTENSION-authoritative (v3.3.0): the
+    // `:host([data-modality][data-ring])` reveal in `generateShadowCSS`
+    // used to depend on the WRAPPER writing these via a `javascript:` URL
+    // load, which page CSP (YouTube's Trusted-Types policy) can block —
+    // leaving the gate permanently absent. Stamping them here, from the
+    // extension's own modality state, makes the gate work on every page
+    // with no host round-trip. Wrapper writes of the same attributes stay
+    // harmless: both writers derive from the same physical input events.
+    host.setAttribute('data-modality', state.lastReportedModality || 'touch');
+    host.setAttribute('data-ring', 'hidden');
     document.body.appendChild(host);
 
     const shadow = host.attachShadow({ mode: 'open' });
@@ -667,6 +677,7 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
         if (state.overlay) {
             state.overlay.classList.remove('visible');
         }
+        setHostRing(state, false);
         const shadow = state.overlayHost?.shadowRoot;
         const label = shadow?.getElementById(overlayLabelId) as HTMLElement | null;
         if (label) {
@@ -675,6 +686,8 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
         updateDebugHud(state);
         return;
     }
+
+    setHostRing(state, true);
 
     // Get the visual bounds using our consolidated logic
     const rect = calculateVisualRect(element);
@@ -885,6 +898,28 @@ export function showOverlay(element: HTMLElement | null, state: SpatialNavState,
 }
 
 /**
+ * Stamp the current input modality onto the overlay host so the
+ * `:host([data-modality="hardware-nav"][data-ring="visible"])` CSS gate
+ * (see `generateShadowCSS`) tracks the EXTENSION's own modality state —
+ * no wrapper round-trip, so it cannot be lost to page CSP or host
+ * re-creation. Safe no-op before the host exists.
+ */
+export function setHostModality(modality: 'touch' | 'hardware-nav'): void {
+    const host = document.getElementById(overlayHostId);
+    if (host) {
+        host.setAttribute('data-modality', modality);
+    }
+}
+
+/** Stamp ring visibility onto the overlay host (see `setHostModality`). */
+function setHostRing(state: SpatialNavState, visible: boolean): void {
+    const host = state.overlayHost || document.getElementById(overlayHostId);
+    if (host) {
+        host.setAttribute('data-ring', visible ? 'visible' : 'hidden');
+    }
+}
+
+/**
  * Hide the focus overlay.
  */
 export function hideOverlay(state: SpatialNavState): void {
@@ -899,6 +934,7 @@ export function hideOverlay(state: SpatialNavState): void {
     if (state.overlay) {
         state.overlay.classList.remove('visible');
     }
+    setHostRing(state, false);
     if (state.activeResizeObserver) {
         state.activeResizeObserver.disconnect();
         state.activeResizeObserver = null;

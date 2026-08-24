@@ -325,7 +325,14 @@ export function getConfig(): SpatialNavConfig {
         overlayGlowOpacity: clampNumber(userConfig.overlayGlowOpacity, 0, 1, 0.35),
         overlayGlowBlur: clampNumber(userConfig.overlayGlowBlur, 0, 64, 14),
         overlayInnerGlowOpacity: clampNumber(userConfig.overlayInnerGlowOpacity, 0, 1, 0.16),
-        visibilityMode: userConfig.visibilityMode === 'hardware-nav-only' ? 'hardware-nav-only' : 'always',
+        // Fail-safe polarity (v3.3.0): default to 'hardware-nav-only' so the
+        // ring/chevron overlay never paints from touch interaction unless a
+        // host explicitly opts into 'always' (leanback/dpad surfaces). The
+        // old 'always' default meant hybrid/touch hosts depended entirely on
+        // a wrapper-injected CSS gate delivered over `javascript:` URLs —
+        // which page CSP (YouTube Trusted-Types) blocks, leaving the overlay
+        // ungated and visible on every tap-to-focus.
+        visibilityMode: userConfig.visibilityMode === 'always' ? 'always' : 'hardware-nav-only',
         enableFocusPulse: userConfig.enableFocusPulse === true,
         // Default to `'scroll'` so a directional press at a viewport
         // boundary on a long page scrolls into view instead of silently

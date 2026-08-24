@@ -54,7 +54,7 @@ const log = createLogger('Main');
 
 const STYLE_ID = 'spatnav-focus-styles';
 const OVERLAY_HOST_ID = 'spatnav-focus-host';
-const VERSION = '3.2.0';
+const VERSION = '3.3.0';
 
 // Debounce window for the pageshow re-init handler. Below this threshold we
 // treat consecutive events as the same logical navigation.

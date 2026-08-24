@@ -27,6 +27,7 @@ import { findDirectionalCandidate, type NavigationCandidate } from '../core/scor
 import { safeGetAttr } from '../utils/json';
 import { createLogger } from '../utils/logger';
 import type { SpatialNavState } from '../core/state';
+import { setHostModality } from '../core/overlay';
 import { clampToViewport, pickClickPoint } from './click_utils';
 import { isMenuToggleElement, tryCloseOpenMenuToggle } from './menu_toggle';
 import type { BrowserRuntime } from '../globals';
@@ -144,7 +145,12 @@ export function handleKeyDown(event: KeyboardEvent, state: SpatialNavState): voi
     if (event.key === 'Enter' || event.key === ' ') {
         // Mark hardware-nav so the next real pointer event flips us back to
         // touch (the modality watcher in `main.ts` reads this).
+        // DELIBERATE: synthetic (isTrusted=false) keydowns flip modality
+        // too — the AAOS receiver's LAN-remote D-pad injects synthetic
+        // keydowns and remote navigation must keep its visible ring. Any
+        // trusted pointer event immediately reverts to touch/hidden.
         state.lastReportedModality = 'hardware-nav';
+        setHostModality('hardware-nav');
         handleActivationKey(event, state, myHandlerId);
         return;
     }
@@ -154,8 +160,10 @@ export function handleKeyDown(event: KeyboardEvent, state: SpatialNavState): voi
     if (!keyMap[event.key]) return;
 
     // We're committed to handling a directional key; mark hardware-nav so the
-    // pointer watcher resumes transition reporting.
+    // pointer watcher resumes transition reporting. (Synthetic keys included —
+    // see the LAN-remote note on the Enter/Space branch above.)
     state.lastReportedModality = 'hardware-nav';
+    setHostModality('hardware-nav');
 
     log.debug(`directional key: ${event.key}`);
 

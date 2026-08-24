@@ -28,7 +28,11 @@ test('getConfig provides defaults', () => {
     assert.equal(config.overlayGlowBlur, 14);
     // Phase C M-4/M-5/M-7/M-8 defaults
     assert.equal(config.overlayInnerGlowOpacity, 0.16);
-    assert.equal(config.visibilityMode, 'always');
+    assert.equal(
+        config.visibilityMode,
+        'hardware-nav-only',
+        'v3.3.0 fail-safe polarity: ring hidden unless a host opts into "always"'
+    );
     assert.equal(config.enableFocusPulse, false);
     assert.equal(config.boundaryScrollBehavior, 'scroll', 'default flipped to scroll-on-boundary in v3.1');
 });
@@ -61,11 +65,11 @@ test('getConfig: visibilityMode "hardware-nav-only" is accepted', () => {
     globalThis.flutterSpatialNavConfig = { visibilityMode: 'always' };
     assert.equal(getConfig().visibilityMode, 'always');
 
-    // Unknown string falls back to default.
+    // Unknown string falls back to the (v3.3.0 fail-safe) default.
     globalThis.flutterSpatialNavConfig = {
         visibilityMode: 'something-else' as 'always',
     };
-    assert.equal(getConfig().visibilityMode, 'always');
+    assert.equal(getConfig().visibilityMode, 'hardware-nav-only');
 });
 
 test('getConfig: enableFocusPulse must be exactly `true` to enable', () => {

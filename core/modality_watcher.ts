@@ -24,7 +24,7 @@
  */
 
 import type { SpatialNavState } from './state';
-import { hideOverlay } from './overlay';
+import { hideOverlay, setHostModality } from './overlay';
 import { hidePreviewElements } from './preview';
 import { createLogger } from '../utils/logger';
 
@@ -107,26 +107,16 @@ export function setupInputModalityWatcher(
         // rewrite the synthetic events' `pointerType` because page-side
         // tap handlers inspect it to recognise a touch activation.
         if (e.isTrusted === false) return;
-        if (state.lastReportedModality === 'touch') return;
-        state.lastReportedModality = 'touch';
-        // Belt-and-braces: hide ring + preview chevrons directly via the
-        // extension's own DOM manipulation. The wrapper-side shadow-DOM
-        // `:host { opacity: 0 }` gate normally handles this — but the
-        // wrapper's runJavaScript is async (queued on the platform
-        // channel) and there's a window where:
-        //   - YouTube / similar SPA fires a `pageshow` or re-init event
-        //   - Extension calls `ensureOverlay` → removes old host, creates
-        //     fresh host (no wrapper marker style, no `data-modality`)
-        //   - User touches before the wrapper's next `_writeHostAttributes`
-        //     lands
-        // During that race, the extension's `showOverlay(null)` path
-        // removes the ring's `.visible` class (ring hides via extension
-        // CSS) but the chevrons keep their `.show` class — visible. The
-        // synchronous hide here closes that gap regardless of wrapper
-        // timing. Idempotent: both helpers no-op when their targets are
-        // already hidden.
+        // ALWAYS hide on a trusted pointer — even when modality is already
+        // 'touch'. The old early-return above the hide meant a touch-only
+        // session (lastReportedModality initializes to 'touch') never ran
+        // the hide at all, so a ring painted by any other path stayed up.
+        // Only the modality transition + postback below are throttled.
         hideOverlay(state);
         hidePreviewElements(state);
+        if (state.lastReportedModality === 'touch') return;
+        state.lastReportedModality = 'touch';
+        setHostModality('touch');
         postback('touch');
     };
 

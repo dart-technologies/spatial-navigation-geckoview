@@ -237,7 +237,7 @@ export function getState(config: SpatialNavConfig): SpatialNavState {
 
     // Core navigation state
     state.config = config;
-    state.version = '3.2.0';
+    state.version = '3.3.0';
     state.currentIndex = typeof state.currentIndex === 'number' ? state.currentIndex : -1;
     state.initialized = !!state.initialized;
     state.handlersAttached = !!state.handlersAttached;
@@ -364,6 +364,6 @@ export function getInstrumentation():
         ...state.instrumentation,
         focusablesCount: state.focusables.length,
         currentIndex: state.currentIndex,
-        version: state.version || '3.2.0',
+        version: state.version || '3.3.0',
     };
 }

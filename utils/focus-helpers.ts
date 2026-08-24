@@ -5,8 +5,8 @@
  * and prevent circular dependencies with observer.ts.
  */
 
-import { showOverlay } from '../core/overlay';
-import { updatePreviewVisuals } from '../core/preview';
+import { showOverlay, hideOverlay } from '../core/overlay';
+import { updatePreviewVisuals, hidePreviewElements } from '../core/preview';
 import { findDirectionalCandidate } from '../core/scoring';
 import { directionByName, type DirectionMap } from '../core/config';
 import { getActiveElement, describeElement } from './dom';
@@ -23,6 +23,29 @@ const log = createLogger('Focus');
  * @param state - Global state object
  */
 export function scheduleOverlayUpdate(target: HTMLElement, state: SpatialNavState): void {
+    // Modality gate (v3.3.0): in 'hardware-nav-only' mode the ring and
+    // chevron previews may only paint while the last observed input was a
+    // hardware key. A tap-to-focus (capture-phase `focus` listener in
+    // handlers.ts) or a touch drag-scroll otherwise repaints them — the
+    // exact leak users saw on Trusted-Types pages where the wrapper's CSS
+    // gate injection is CSP-blocked. Enforced here, in the extension's own
+    // compartment, so no host round-trip can break it.
+    if (
+        state.config?.visibilityMode === 'hardware-nav-only' &&
+        state.lastReportedModality !== 'hardware-nav'
+    ) {
+        if (state.updateTimer) {
+            cancelAnimationFrame(state.updateTimer);
+            state.updateTimer = null;
+        }
+        hideOverlay(state);
+        hidePreviewElements(state);
+        if (target && target.nodeType === 1) {
+            state.lastFocusedElement = target;
+        }
+        return;
+    }
+
     if (state.overlaySuppressed) {
         // [diag] If "ring vanished" coincides with this branch firing,
         // the bug is upstream — someone set `overlaySuppressed = true`
