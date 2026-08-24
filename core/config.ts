@@ -54,9 +54,9 @@ export interface FocusGroupsConfig {
  * Controls when the focus ring (and the rest of the shadow subtree —
  * preview chevrons, label, debug HUD) is visible.
  *
- * - `always`: legacy default. The overlay is visible whenever the
- *   extension renders it. Suitable for kiosks / fixed hardware-nav
- *   devices that never receive touch input.
+ * - `always`: opt-in. The overlay is visible whenever the extension
+ *   renders it. Suitable for kiosks / leanback / fixed hardware-nav
+ *   devices (dpad surfaces) that never receive touch input.
  * - `hardware-nav-only`: the host writes `data-modality` / `data-ring`
  *   attributes on the shadow host (`#spatnav-focus-host`); the overlay
  *   is hidden unless modality is `hardware-nav` AND ring is `visible`.
@@ -105,8 +105,9 @@ export interface SpatialNavConfig {
     overlayInnerGlowOpacity: number;
     /**
      * Controls when the focus ring + previews are rendered. See
-     * [OverlayVisibilityMode]. Default `always` for back-compat;
-     * touch-aware hosts (browsers) should set `hardware-nav-only`.
+     * [OverlayVisibilityMode]. Default `hardware-nav-only` since 3.3.0
+     * (fail-safe polarity — the ring can never paint from touch unless a
+     * host opts in); dpad/leanback hosts set `always` explicitly.
      */
     visibilityMode: OverlayVisibilityMode;
     /**
